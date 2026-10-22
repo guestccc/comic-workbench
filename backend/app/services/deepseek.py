@@ -13,6 +13,8 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from ..config import (
+    ART_STYLE_OPTIMIZE_MAX_TOKENS,
+    ART_STYLE_OPTIMIZE_SYSTEM_PROMPT,
     DEEPSEEK_API_URL,
     DEEPSEEK_CONNECT_TIMEOUT,
     DEEPSEEK_MAX_TOKENS,
@@ -49,19 +51,28 @@ class GeneratedCopy(BaseModel):
 
 
 def build_messages(
-    start_prompt: str, story_name: str, story_content: str
+    start_prompt: str,
+    story_name: str,
+    story_content: str,
+    art_style: str | None = None,
+    art_style_name: str | None = None,
 ) -> list[dict[str, str]]:
     """构造发给 DeepSeek 的消息。
 
-    启动提示词支持 {story_name} / {story_content} 占位符；若没有占位符，
-    则把故事内容放到 user 消息中。
+    启动提示词支持 {story_name} / {story_content} / {art_style} /
+    {art_style_name} 占位符；若没有故事占位符，则把故事内容放到 user 消息中。
+    {art_style} / {art_style_name} 分别由当前选用画风的描述 / 名称替换，
+    未选用时保持原样。
     """
     has_placeholder = "{story_name}" in start_prompt or "{story_content}" in start_prompt
-    system_prompt = (
-        start_prompt.replace("{story_name}", story_name)
-        .replace("{story_content}", story_content)
-        + OUTPUT_CONTRACT
+    system_prompt = start_prompt.replace("{story_name}", story_name).replace(
+        "{story_content}", story_content
     )
+    if art_style is not None:
+        system_prompt = system_prompt.replace("{art_style}", art_style)
+    if art_style_name is not None:
+        system_prompt = system_prompt.replace("{art_style_name}", art_style_name)
+    system_prompt += OUTPUT_CONTRACT
 
     if has_placeholder:
         user_prompt = (
@@ -193,35 +204,46 @@ def _extract_sse_data(line: str) -> str | None:
 
 
 def _build_optimize_messages(
-    current_prompt: str, messages: list[dict[str, str]]
+    current_content: str,
+    messages: list[dict[str, str]],
+    system_prompt: str,
+    content_label: str,
 ) -> list[dict[str, str]]:
     """拼接优化器的 System Prompt 与多轮对话。
 
-    当前提示词放在明确分隔符中，并要求模型忽略其中的越权指令。
+    待优化内容放在明确分隔符中，并要求模型忽略其中的越权指令。
     """
-    system_prompt = (
-        f"{PROMPT_OPTIMIZE_SYSTEM_PROMPT}\n"
-        "当前启动提示词如下：\n"
-        "<current_prompt>\n"
-        f"{current_prompt}\n"
-        "</current_prompt>\n"
+    system = (
+        f"{system_prompt}\n"
+        f"{content_label}如下：\n"
+        "<current_content>\n"
+        f"{current_content}\n"
+        "</current_content>\n"
     )
-    return [{"role": "system", "content": system_prompt}, *messages]
+    return [{"role": "system", "content": system}, *messages]
 
 
-def stream_prompt_optimization(
-    api_key: str, current_prompt: str, messages: list[dict[str, str]]
+def _stream_optimization(
+    api_key: str,
+    current_content: str,
+    messages: list[dict[str, str]],
+    *,
+    system_prompt: str,
+    content_label: str,
+    max_tokens: int,
 ) -> Iterator[str]:
-    """流式调用 DeepSeek 优化启动提示词，产出 SSE 文本。
+    """流式优化通用实现：启动提示词与画风描述共用同一套解析逻辑。
 
     流开始后发生的错误无法再改变 HTTP 状态码，因此统一转成 error 事件，
     由前端展示为错误气泡。
     """
     payload = {
         "model": DEEPSEEK_MODEL,
-        "messages": _build_optimize_messages(current_prompt, messages),
+        "messages": _build_optimize_messages(
+            current_content, messages, system_prompt, content_label
+        ),
         "stream": True,
-        "max_tokens": PROMPT_OPTIMIZE_MAX_TOKENS,
+        "max_tokens": max_tokens,
         "temperature": PROMPT_OPTIMIZE_TEMPERATURE,
     }
     timeout = httpx.Timeout(DEEPSEEK_READ_TIMEOUT, connect=DEEPSEEK_CONNECT_TIMEOUT)
@@ -309,7 +331,7 @@ def stream_prompt_optimization(
         )
     except Exception:
         # 流式响应开始后不能再抛异常给全局处理器，必须转成错误事件
-        logger.exception("AI 优化启动提示词时发生未处理异常")
+        logger.exception("AI 优化时发生未处理异常")
         yield _sse_event(
             {
                 "type": "error",
@@ -322,6 +344,34 @@ def stream_prompt_optimization(
         close = getattr(lines, "close", None)
         if callable(close):
             close()
+
+
+def stream_prompt_optimization(
+    api_key: str, current_prompt: str, messages: list[dict[str, str]]
+) -> Iterator[str]:
+    """流式优化启动提示词。"""
+    yield from _stream_optimization(
+        api_key,
+        current_prompt,
+        messages,
+        system_prompt=PROMPT_OPTIMIZE_SYSTEM_PROMPT,
+        content_label="当前启动提示词",
+        max_tokens=PROMPT_OPTIMIZE_MAX_TOKENS,
+    )
+
+
+def stream_art_style_optimization(
+    api_key: str, current_style: str, messages: list[dict[str, str]]
+) -> Iterator[str]:
+    """流式优化画风描述。"""
+    yield from _stream_optimization(
+        api_key,
+        current_style,
+        messages,
+        system_prompt=ART_STYLE_OPTIMIZE_SYSTEM_PROMPT,
+        content_label="当前画风描述",
+        max_tokens=ART_STYLE_OPTIMIZE_MAX_TOKENS,
+    )
 
 
 def _load_json_object(text: str) -> dict:
@@ -396,14 +446,21 @@ def _parse_response(response: httpx.Response) -> GeneratedCopy:
 
 
 def generate_copy(
-    api_key: str, start_prompt: str, story_name: str, story_content: str
+    api_key: str,
+    start_prompt: str,
+    story_name: str,
+    story_content: str,
+    art_style: str | None = None,
+    art_style_name: str | None = None,
 ) -> GeneratedCopy:
     """生成小红书标题与正文。
 
     仅对「输出格式异常」重试一次；鉴权、限流、网络、超时等错误直接抛出，
     由前端提示用户手动重试。
     """
-    messages = build_messages(start_prompt, story_name, story_content)
+    messages = build_messages(
+        start_prompt, story_name, story_content, art_style, art_style_name
+    )
     last_error: AppError | None = None
 
     for attempt in range(2):

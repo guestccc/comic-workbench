@@ -1,20 +1,22 @@
 import { Avatar, Button, Space } from 'antd'
 import {
-  CheckOutlined,
   CopyOutlined,
+  DiffOutlined,
   RobotOutlined,
   UserOutlined,
 } from '@ant-design/icons'
 import type { BubbleItemType, BubbleListProps } from '@ant-design/x'
 import { Bubble, Prompts, Welcome } from '@ant-design/x'
-import { QUICK_PROMPTS } from '../utils/promptOptimizer'
-import type { ChatMessage } from '../utils/promptOptimizer'
+import { OPTIMIZER_COPY } from '../utils/promptOptimizer'
+import type { ChatMessage, OptimizerMode } from '../utils/promptOptimizer'
 
 interface PromptOptimizerChatProps {
+  mode: OptimizerMode
   messages: ChatMessage[]
   /** 点击快捷指令或气泡操作时回调 */
   onSend: (instruction: string) => void
-  onApply: (content: string) => void
+  /** 打开原版 / 新版对比，确认后才应用 */
+  onCompare: (content: string) => void
   onCopy: (content: string) => void
 }
 
@@ -37,25 +39,30 @@ const ROLES: NonNullable<BubbleListProps['role']> = {
 
 /** AI 优化抽屉的会话区：空会话引导 + 消息气泡列表。 */
 export default function PromptOptimizerChat({
+  mode,
   messages,
   onSend,
-  onApply,
+  onCompare,
   onCopy,
 }: PromptOptimizerChatProps) {
+  const copy = OPTIMIZER_COPY[mode]
+
   if (messages.length === 0) {
     return (
       <div className="prompt-chat-welcome">
         <Welcome
           icon={<RobotOutlined style={{ fontSize: 30, color: '#ff2442' }} />}
-          title="让 AI 帮你打磨启动提示词"
-          description="AI 会基于编辑器中的当前内容给出完整新版，确认后点击「应用到编辑器」即可。"
+          title={copy.welcomeTitle}
+          description={copy.welcomeDescription}
         />
         <Prompts
           title="可以这样问"
-          items={QUICK_PROMPTS.map(({ key, label }) => ({ key, label }))}
+          items={copy.quickPrompts.map(({ key, label }) => ({ key, label }))}
           vertical
           onItemClick={({ data }) => {
-            const quick = QUICK_PROMPTS.find((item) => item.key === data.key)
+            const quick = copy.quickPrompts.find(
+              (item) => item.key === data.key,
+            )
             if (quick) {
               onSend(quick.instruction)
             }
@@ -83,10 +90,10 @@ export default function PromptOptimizerChat({
           <Button
             type="link"
             size="small"
-            icon={<CheckOutlined />}
-            onClick={() => onApply(item.content)}
+            icon={<DiffOutlined />}
+            onClick={() => onCompare(item.content)}
           >
-            应用到编辑器
+            对比
           </Button>
           <Button
             type="link"

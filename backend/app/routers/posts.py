@@ -6,7 +6,11 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from ..crud import get_start_prompt, resolve_deepseek_key
+from ..crud import (
+    get_active_art_style,
+    get_start_prompt,
+    resolve_deepseek_key,
+)
 from ..database import get_db
 from ..errors import AppError
 from ..models import Post, Story
@@ -94,6 +98,9 @@ def generate_post_copy(
     story_name = story.name
     story_content = story.content
     start_prompt, _ = get_start_prompt(db)
+    active_style = get_active_art_style(db)
+    art_style = active_style["content"] if active_style is not None else None
+    art_style_name = active_style["name"] if active_style is not None else None
     api_key, _, _ = resolve_deepseek_key(db)
     db.rollback()
 
@@ -109,6 +116,8 @@ def generate_post_copy(
         start_prompt=start_prompt,
         story_name=story_name,
         story_content=story_content,
+        art_style=art_style,
+        art_style_name=art_style_name,
     )
     return GenerateResponse(
         story_id=payload.story_id, title=copy.title, content=copy.content

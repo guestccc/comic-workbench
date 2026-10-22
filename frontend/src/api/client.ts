@@ -1,4 +1,6 @@
 import type {
+  ArtStyleOptimizePayload,
+  ArtStylesPayload,
   GeneratedCopy,
   Post,
   PostStatus,
@@ -77,6 +79,11 @@ export const api = {
     }),
   resetPrompt: () =>
     request<SettingsData>('/api/settings/prompt/reset', { method: 'POST' }),
+  saveArtStyles: (payload: ArtStylesPayload) =>
+    request<SettingsData>('/api/settings/art-styles', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
   saveDeepseekKey: (apiKey: string) =>
     request<SettingsData>('/api/settings/deepseek', {
       method: 'PUT',
@@ -158,18 +165,19 @@ interface PromptOptimizeEvent {
 }
 
 /**
- * 以 SSE 流式获取 AI 优化后的启动提示词。
+ * 以 SSE 流式获取 AI 优化结果（启动提示词 / 画风描述共用）。
  *
  * 普通请求层只处理 JSON，因此这里单独使用 fetch + ReadableStream。
  * 调用方通过 AbortSignal 取消；错误统一抛 ApiError，便于复用错误提示。
  */
-export async function* streamPromptOptimize(
-  payload: PromptOptimizePayload,
+async function* streamOptimization(
+  path: string,
+  payload: PromptOptimizePayload | ArtStyleOptimizePayload,
   signal?: AbortSignal,
 ): AsyncGenerator<string, void, void> {
   let response: Response
   try {
-    response = await fetch('/api/settings/prompt/optimize', {
+    response = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -268,4 +276,20 @@ export async function* streamPromptOptimize(
     }
     reader.releaseLock()
   }
+}
+
+/** 流式优化启动提示词。 */
+export function streamPromptOptimize(
+  payload: PromptOptimizePayload,
+  signal?: AbortSignal,
+): AsyncGenerator<string, void, void> {
+  return streamOptimization('/api/settings/prompt/optimize', payload, signal)
+}
+
+/** 流式优化画风描述。 */
+export function streamArtStyleOptimize(
+  payload: ArtStyleOptimizePayload,
+  signal?: AbortSignal,
+): AsyncGenerator<string, void, void> {
+  return streamOptimization('/api/settings/art-styles/optimize', payload, signal)
 }

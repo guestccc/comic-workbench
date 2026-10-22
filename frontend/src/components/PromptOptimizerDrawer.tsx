@@ -1,19 +1,23 @@
 import { useRef, useState } from 'react'
 import { App, Button, Drawer, Typography } from 'antd'
 import { Sender } from '@ant-design/x'
-import { ApiError, getErrorMessage, streamPromptOptimize } from '../api/client'
-import PromptOptimizerChat from './PromptOptimizerChat'
 import {
-  buildHistory,
-  nextMessageKey,
-  stripCodeFence,
-} from '../utils/promptOptimizer'
-import type { ChatMessage } from '../utils/promptOptimizer'
+  ApiError,
+  getErrorMessage,
+  streamArtStyleOptimize,
+  streamPromptOptimize,
+} from '../api/client'
+import PromptOptimizerChat from './PromptOptimizerChat'
+import OptimizerCompareModal from './OptimizerCompareModal'
+import { OPTIMIZER_COPY, buildHistory, nextMessageKey, stripCodeFence } from '../utils/promptOptimizer'
+import type { ChatMessage, OptimizerMode } from '../utils/promptOptimizer'
 import { copyText } from '../utils/clipboard'
 
 interface PromptOptimizerDrawerProps {
   open: boolean
-  /** 编辑器中的当前提示词（可能尚未保存） */
+  /** 优化对象：启动提示词或画风描述 */
+  mode?: OptimizerMode
+  /** 当前内容（提示词 / 画风描述，可能尚未保存） */
   currentPrompt: string
   onClose: () => void
   /** 把 AI 结果填入编辑器，由父组件决定是否保存 */
@@ -22,14 +26,18 @@ interface PromptOptimizerDrawerProps {
 
 export default function PromptOptimizerDrawer({
   open,
+  mode = 'prompt',
   currentPrompt,
   onClose,
   onApply,
 }: PromptOptimizerDrawerProps) {
   const { message } = App.useApp()
+  const copy = OPTIMIZER_COPY[mode]
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  // 待确认的新版内容；非 null 时展示对比弹窗
+  const [compareContent, setCompareContent] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const updateAiMessage = (
@@ -45,7 +53,7 @@ export default function PromptOptimizerDrawer({
     const instruction = (value ?? input).trim()
     if (!instruction || loading) return
     if (!currentPrompt.trim()) {
-      message.warning('启动提示词为空，无法优化')
+      message.warning(copy.emptyCurrentWarning)
       return
     }
 
@@ -66,13 +74,23 @@ export default function PromptOptimizerDrawer({
     let received = ''
 
     try {
-      const stream = streamPromptOptimize(
-        {
-          current_prompt: currentPrompt,
-          messages: [...history, { role: 'user', content: instruction }],
-        },
-        controller.signal,
-      )
+      const turn = { role: 'user' as const, content: instruction }
+      const stream =
+        mode === 'art_style'
+          ? streamArtStyleOptimize(
+              {
+                current_style: currentPrompt,
+                messages: [...history, turn],
+              },
+              controller.signal,
+            )
+          : streamPromptOptimize(
+              {
+                current_prompt: currentPrompt,
+                messages: [...history, turn],
+              },
+              controller.signal,
+            )
 
       for await (const delta of stream) {
         received += delta
@@ -114,13 +132,24 @@ export default function PromptOptimizerDrawer({
     abortRef.current?.abort()
   }
 
+  const handleCompare = (content: string) => {
+    const next = stripCodeFence(content)
+    if (!next) {
+      message.warning('没有可对比的内容')
+      return
+    }
+    setCompareContent(next)
+  }
+
   const handleClose = () => {
     abortRef.current?.abort()
+    setCompareContent(null)
     onClose()
   }
 
   const handleClear = () => {
     abortRef.current?.abort()
+    setCompareContent(null)
     setMessages([])
     setInput('')
   }
@@ -132,7 +161,7 @@ export default function PromptOptimizerDrawer({
       return
     }
     onApply(prompt)
-    message.success('已填入编辑器，请确认后保存')
+    message.success(copy.applySuccess)
     handleClose()
   }
 
@@ -146,59 +175,74 @@ export default function PromptOptimizerDrawer({
   }
 
   return (
-    <Drawer
-      title="AI 优化启动提示词"
-      open={open}
-      onClose={handleClose}
-      width={520}
-      extra={
-        <Button
-          size="small"
-          onClick={handleClear}
-          disabled={messages.length === 0 && !loading}
-        >
-          清空对话
-        </Button>
-      }
-      styles={{
-        body: {
-          padding: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: 0,
-        },
-      }}
-    >
-      <div className="prompt-chat">
-        <div className="prompt-chat-messages">
-          <PromptOptimizerChat
-            messages={messages}
-            onSend={(instruction) => void handleSend(instruction)}
-            onApply={handleApply}
-            onCopy={(content) => void handleCopy(content)}
-          />
+    <>
+      <Drawer
+        title={copy.drawerTitle}
+        open={open}
+        onClose={handleClose}
+        width={520}
+        // 画风优化抽屉会叠在编辑弹窗之上，需要更高的层级
+        zIndex={1200}
+        extra={
+          <Button
+            size="small"
+            onClick={handleClear}
+            disabled={messages.length === 0 && !loading}
+          >
+            清空对话
+          </Button>
+        }
+        styles={{
+          body: {
+            padding: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+          },
+        }}
+      >
+        <div className="prompt-chat">
+          <div className="prompt-chat-messages">
+            <PromptOptimizerChat
+              mode={mode}
+              messages={messages}
+              onSend={(instruction) => void handleSend(instruction)}
+              onCompare={handleCompare}
+              onCopy={(content) => void handleCopy(content)}
+            />
+          </div>
+          <div className="prompt-chat-input">
+            <Sender
+              value={input}
+              onChange={setInput}
+              onSubmit={(value) => void handleSend(value)}
+              onCancel={handleStop}
+              loading={loading}
+              disabled={!currentPrompt.trim()}
+              placeholder={
+                currentPrompt.trim()
+                  ? copy.instructionPlaceholder
+                  : copy.emptyCurrentPlaceholder
+              }
+              autoSize={{ minRows: 2, maxRows: 6 }}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {copy.footerNote}
+            </Typography.Text>
+          </div>
         </div>
+      </Drawer>
 
-        <div className="prompt-chat-input">
-          <Sender
-            value={input}
-            onChange={setInput}
-            onSubmit={(value) => void handleSend(value)}
-            onCancel={handleStop}
-            loading={loading}
-            disabled={!currentPrompt.trim()}
-            placeholder={
-              currentPrompt.trim()
-                ? '描述你希望如何优化，例如：更结构化、补充人物一致性…'
-                : '请先在编辑器中填写启动提示词'
-            }
-            autoSize={{ minRows: 2, maxRows: 6 }}
-          />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            AI 基于编辑器中的当前内容优化；应用后仍需点击「保存提示词」。
-          </Typography.Text>
-        </div>
-      </div>
-    </Drawer>
+      <OptimizerCompareModal
+        open={compareContent !== null}
+        original={currentPrompt}
+        optimized={compareContent ?? ''}
+        onClose={() => setCompareContent(null)}
+        onApply={(value) => {
+          setCompareContent(null)
+          handleApply(value)
+        }}
+      />
+    </>
   )
 }

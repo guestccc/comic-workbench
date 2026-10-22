@@ -7,11 +7,24 @@ export interface DeepSeekStatus {
   db_configured: boolean
 }
 
+export interface ArtStyle {
+  id: string
+  name: string
+  content: string
+}
+
+export interface ArtStylesPayload {
+  styles: ArtStyle[]
+  active_id: string | null
+}
+
 export interface SettingsData {
   prompt: string
   is_default: boolean
   prompt_updated_at: string | null
   deepseek: DeepSeekStatus
+  art_styles: ArtStyle[]
+  active_art_style: string | null
 }
 
 export type PromptOptimizeRole = 'user' | 'assistant'
@@ -23,6 +36,11 @@ export interface PromptOptimizeMessage {
 
 export interface PromptOptimizePayload {
   current_prompt: string
+  messages: PromptOptimizeMessage[]
+}
+
+export interface ArtStyleOptimizePayload {
+  current_style: string
   messages: PromptOptimizeMessage[]
 }
 

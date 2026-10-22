@@ -9,21 +9,28 @@ from sqlalchemy.orm import Session
 from ..config import DEEPSEEK_KEY, DEFAULT_START_PROMPT, PROMPT_KEY
 from ..crud import (
     delete_setting,
+    get_art_styles,
     get_start_prompt,
     mask_key,
     resolve_deepseek_key,
+    save_art_styles,
     upsert_setting,
 )
 from ..database import get_db
 from ..errors import AppError
 from ..schemas import (
+    ArtStyleOptimizeRequest,
+    ArtStylesUpdate,
     DeepSeekKeyUpdate,
     DeepSeekStatus,
     PromptOptimizeRequest,
     PromptUpdate,
     SettingsRead,
 )
-from ..services.deepseek import stream_prompt_optimization
+from ..services.deepseek import (
+    stream_art_style_optimization,
+    stream_prompt_optimization,
+)
 
 router = APIRouter(prefix="/api/settings", tags=["设置"])
 
@@ -32,6 +39,7 @@ def _build_settings(db: Session) -> SettingsRead:
     """组装设置页所需数据，Key 只返回脱敏值与来源，绝不返回明文。"""
     prompt, prompt_row = get_start_prompt(db)
     key, source, db_configured = resolve_deepseek_key(db)
+    art_styles, active_art_style = get_art_styles(db)
     return SettingsRead(
         prompt=prompt,
         is_default=prompt == DEFAULT_START_PROMPT,
@@ -42,6 +50,8 @@ def _build_settings(db: Session) -> SettingsRead:
             masked_key=mask_key(key),
             db_configured=db_configured,
         ),
+        art_styles=art_styles,  # type: ignore[arg-type]
+        active_art_style=active_art_style,
     )
 
 
@@ -82,12 +92,54 @@ def optimize_prompt(
     if api_key is None:
         raise AppError(
             409,
-            "尚未配置 DeepSeek API Key，请先到「启动提示词」页面完成配置",
+            "尚未配置 DeepSeek API Key，请先到「设置」页面完成配置",
             "DEEPSEEK_KEY_MISSING",
         )
 
     return StreamingResponse(
         stream_prompt_optimization(api_key, current_prompt, messages),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.put("/art-styles", response_model=SettingsRead)
+def update_art_styles(
+    payload: ArtStylesUpdate, db: Session = Depends(get_db)
+) -> SettingsRead:
+    """全量保存画风列表与当前选用的画风，两者在同一事务中落库。"""
+    save_art_styles(
+        db,
+        [style.model_dump() for style in payload.styles],
+        payload.active_id,
+    )
+    db.commit()
+    return _build_settings(db)
+
+
+@router.post("/art-styles/optimize")
+def optimize_art_style(
+    payload: ArtStyleOptimizeRequest, db: Session = Depends(get_db)
+) -> StreamingResponse:
+    """AI 优化画风描述，以 SSE 流式返回；Key 只在服务端使用。"""
+    api_key, _, _ = resolve_deepseek_key(db)
+    # 与启动提示词优化一致：取完数据后结束读事务，流式期间不持有数据库事务
+    current_style = payload.current_style
+    messages = [message.model_dump() for message in payload.messages]
+    db.rollback()
+
+    if api_key is None:
+        raise AppError(
+            409,
+            "尚未配置 DeepSeek API Key，请先到「设置」页面完成配置",
+            "DEEPSEEK_KEY_MISSING",
+        )
+
+    return StreamingResponse(
+        stream_art_style_optimization(api_key, current_style, messages),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
