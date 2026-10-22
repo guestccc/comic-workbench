@@ -1,0 +1,113 @@
+"""设置接口：启动提示词与 DeepSeek API Key。"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
+
+from ..config import DEEPSEEK_KEY, DEFAULT_START_PROMPT, PROMPT_KEY
+from ..crud import (
+    delete_setting,
+    get_start_prompt,
+    mask_key,
+    resolve_deepseek_key,
+    upsert_setting,
+)
+from ..database import get_db
+from ..errors import AppError
+from ..schemas import (
+    DeepSeekKeyUpdate,
+    DeepSeekStatus,
+    PromptOptimizeRequest,
+    PromptUpdate,
+    SettingsRead,
+)
+from ..services.deepseek import stream_prompt_optimization
+
+router = APIRouter(prefix="/api/settings", tags=["设置"])
+
+
+def _build_settings(db: Session) -> SettingsRead:
+    """组装设置页所需数据，Key 只返回脱敏值与来源，绝不返回明文。"""
+    prompt, prompt_row = get_start_prompt(db)
+    key, source, db_configured = resolve_deepseek_key(db)
+    return SettingsRead(
+        prompt=prompt,
+        is_default=prompt == DEFAULT_START_PROMPT,
+        prompt_updated_at=prompt_row.updated_at if prompt_row is not None else None,
+        deepseek=DeepSeekStatus(
+            configured=key is not None,
+            source=source,  # type: ignore[arg-type]
+            masked_key=mask_key(key),
+            db_configured=db_configured,
+        ),
+    )
+
+
+@router.get("", response_model=SettingsRead)
+def read_settings(db: Session = Depends(get_db)) -> SettingsRead:
+    return _build_settings(db)
+
+
+@router.put("/prompt", response_model=SettingsRead)
+def update_prompt(payload: PromptUpdate, db: Session = Depends(get_db)) -> SettingsRead:
+    upsert_setting(db, PROMPT_KEY, payload.content)
+    db.commit()
+    return _build_settings(db)
+
+
+@router.post("/prompt/reset", response_model=SettingsRead)
+def reset_prompt(db: Session = Depends(get_db)) -> SettingsRead:
+    delete_setting(db, PROMPT_KEY)
+    db.commit()
+    return _build_settings(db)
+
+
+@router.post("/prompt/optimize")
+def optimize_prompt(
+    payload: PromptOptimizeRequest, db: Session = Depends(get_db)
+) -> StreamingResponse:
+    """AI 优化启动提示词，以 SSE 流式返回。
+
+    Key 仅在服务端读取并用于调用上游，不会下发到浏览器。
+    """
+    api_key, _, _ = resolve_deepseek_key(db)
+    # 与 posts.py 一致：先把数据取到局部变量并结束读事务，
+    # 后续流式调用期间不持有数据库事务。
+    current_prompt = payload.current_prompt
+    messages = [message.model_dump() for message in payload.messages]
+    db.rollback()
+
+    if api_key is None:
+        raise AppError(
+            409,
+            "尚未配置 DeepSeek API Key，请先到「启动提示词」页面完成配置",
+            "DEEPSEEK_KEY_MISSING",
+        )
+
+    return StreamingResponse(
+        stream_prompt_optimization(api_key, current_prompt, messages),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.put("/deepseek", response_model=SettingsRead)
+def update_deepseek_key(
+    payload: DeepSeekKeyUpdate, db: Session = Depends(get_db)
+) -> SettingsRead:
+    api_key = payload.api_key.get_secret_value().strip()
+    upsert_setting(db, DEEPSEEK_KEY, api_key)
+    db.commit()
+    return _build_settings(db)
+
+
+@router.delete("/deepseek", response_model=SettingsRead)
+def clear_deepseek_key(db: Session = Depends(get_db)) -> SettingsRead:
+    delete_setting(db, DEEPSEEK_KEY)
+    db.commit()
+    return _build_settings(db)

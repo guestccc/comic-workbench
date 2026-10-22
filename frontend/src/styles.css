@@ -1,0 +1,169 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f5f6f8;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+.app-sider {
+  border-right: 1px solid #f0f0f0;
+  position: relative;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 22px 20px 16px;
+}
+
+.brand-dot {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ff2442, #ff7a90);
+  box-shadow: 0 4px 10px rgba(255, 36, 66, 0.25);
+}
+
+.brand-sub {
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sider-footer {
+  position: absolute;
+  bottom: 16px;
+  left: 20px;
+  right: 20px;
+  color: #bfbfbf;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.app-header {
+  height: 52px;
+  line-height: 52px;
+  padding: 0 24px;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.app-content {
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.page-header-extra {
+  flex: 0 0 auto;
+}
+
+.panel {
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.panel + .panel {
+  margin-top: 20px;
+}
+
+.panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.cover-thumb {
+  width: 48px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+  background: #f5f5f5;
+}
+
+.cover-placeholder {
+  width: 48px;
+  height: 64px;
+  border-radius: 6px;
+  background: #f5f5f5;
+  color: #bfbfbf;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cover-upload-trigger {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #8c8c8c;
+}
+
+.cover-upload-text {
+  font-size: 12px;
+}
+
+.content-preview {
+  margin-bottom: 0 !important;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.modal-form-tip {
+  color: #8c8c8c;
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+/* AI 优化启动提示词抽屉 */
+.prompt-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.prompt-chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px;
+}
+
+.prompt-chat-welcome {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.prompt-chat-input {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid #f0f0f0;
+}

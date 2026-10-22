@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# 运行时数据
+data/*.db
+data/*.db-*
+data/*.db-wal
+data/*.db-shm
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# 系统 / 本地配置
+.DS_Store
+.env
+.env.local

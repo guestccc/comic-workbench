@@ -1,0 +1,55 @@
+"""数据库连接与会话管理（同步 SQLAlchemy + SQLite）。"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
+
+from fastapi import Request
+from sqlalchemy import Engine, create_engine, event
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+
+class Base(DeclarativeBase):
+    """所有 ORM 模型的基类。"""
+
+
+def _apply_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+    """每个新连接都启用外键约束并设置并发安全相关参数。"""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        # WAL 提升读写并发；对非 SQLite 文件（如内存库）设置失败也不影响使用
+        cursor.execute("PRAGMA journal_mode=WAL")
+    finally:
+        cursor.close()
+
+
+def create_db_engine(db_path: Path) -> Engine:
+    """创建指向指定 SQLite 文件的引擎（自动创建父目录）。"""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    event.listen(engine, "connect", _apply_sqlite_pragmas)
+    return engine
+
+
+def create_session_factory(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+def get_db(request: Request) -> Iterator[Session]:
+    """FastAPI 依赖：每个请求独立 Session，结束时关闭。
+
+    不自动 commit，事务边界由各路由显式控制。
+    """
+    session_factory: sessionmaker[Session] = request.app.state.session_factory
+    db = session_factory()
+    try:
+        yield db
+    finally:
+        db.close()
