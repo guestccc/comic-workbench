@@ -77,7 +77,40 @@ export const ART_STYLE_QUICK_PROMPTS = [
   },
 ] as const
 
-export type OptimizerMode = 'prompt' | 'art_style'
+/** 角色外形描述优化的快捷指令。 */
+export const CHARACTER_QUICK_PROMPTS = [
+  {
+    key: 'sync',
+    label: '同步生图平台的调整',
+    instruction:
+      '我在外部生图平台微调了这个角色的形象，请根据我接下来描述的变化更新外形描述：',
+  },
+  {
+    key: 'posture',
+    label: '补全体态与年龄感',
+    instruction: '请补全这个角色的体态与年龄感描述，让跨镜头生图更稳定。',
+  },
+  {
+    key: 'outfit',
+    label: '只调整服装与配饰',
+    instruction:
+      '请在保持五官、发型、体态等其他特征不变的前提下，只调整服装与配饰。',
+  },
+  {
+    key: 'face',
+    label: '细化面部特征',
+    instruction:
+      '请把面部特征描述得更具体（眼型、眉形、唇形、肤色），便于保持跨镜头一致。',
+  },
+  {
+    key: 'female',
+    label: '按女性基准校正',
+    instruction:
+      '该角色为女性，请按工作台的女性基准校正描述：鹅蛋脸、五官柔和、自然女性曲线，避免男性化。',
+  },
+] as const
+
+export type OptimizerMode = 'prompt' | 'art_style' | 'character'
 
 export interface OptimizerQuickPrompt {
   key: string
@@ -128,6 +161,21 @@ export const OPTIMIZER_COPY: Record<OptimizerMode, OptimizerCopy> = {
     applySuccess: '已填入画风描述，点击「保存」生效',
     footerNote: 'AI 基于当前画风描述优化；应用后仍需点击「保存」。',
     codeBlockLabel: '优化后的画风描述',
+  },
+  character: {
+    drawerTitle: 'AI 优化角色外形',
+    welcomeTitle: '让 AI 帮你打磨角色外形描述',
+    welcomeDescription:
+      '例如同步你在生图平台里的调整：换发型、换衣服、调整体态。AI 会基于角色卡当前外形描述给出完整新版；点击「对比」查看差异，确认后再应用。',
+    quickPrompts: CHARACTER_QUICK_PROMPTS,
+    instructionPlaceholder:
+      '描述你的修改要求，例如：在生图平台换了双马尾、改成黑色皮衣…',
+    emptyCurrentPlaceholder: '该角色还没有外形描述',
+    emptyCurrentWarning: '外形描述为空，无法优化',
+    applySuccess: '角色卡已更新',
+    footerNote:
+      'AI 基于角色卡当前外形描述优化；点击「应用」会直接更新角色卡。',
+    codeBlockLabel: '优化后的外形描述',
   },
 }
 

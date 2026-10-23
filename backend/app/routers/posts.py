@@ -119,7 +119,7 @@ def generate_post_copy(
             "DEEPSEEK_KEY_MISSING",
         )
 
-    copy = generate_copy(
+    options = generate_copy(
         api_key=api_key,
         start_prompt=start_prompt,
         story_name=story_name,
@@ -127,9 +127,7 @@ def generate_post_copy(
         art_style=art_style,
         art_style_name=art_style_name,
     )
-    return GenerateResponse(
-        story_id=payload.story_id, title=copy.title, content=copy.content
-    )
+    return GenerateResponse(story_id=payload.story_id, options=options)
 
 
 @router.get("/{post_id}", response_model=PostRead)

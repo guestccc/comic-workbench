@@ -5,6 +5,7 @@ import {
   ApiError,
   getErrorMessage,
   streamArtStyleOptimize,
+  streamCharacterOptimize,
   streamPromptOptimize,
 } from '../api/client'
 import PromptOptimizerChat from './PromptOptimizerChat'
@@ -15,10 +16,14 @@ import { copyText } from '../utils/clipboard'
 
 interface PromptOptimizerDrawerProps {
   open: boolean
-  /** 优化对象：启动提示词或画风描述 */
+  /** 优化对象：启动提示词、画风描述或角色外形 */
   mode?: OptimizerMode
-  /** 当前内容（提示词 / 画风描述，可能尚未保存） */
+  /** 当前内容（提示词 / 画风描述 / 外形描述，可能尚未保存） */
   currentPrompt: string
+  /** mode 为 character 时必填：所属故事与角色信息 */
+  storyId?: number
+  characterName?: string
+  characterRole?: string
   onClose: () => void
   /** 把 AI 结果填入编辑器，由父组件决定是否保存 */
   onApply: (prompt: string) => void
@@ -28,6 +33,9 @@ export default function PromptOptimizerDrawer({
   open,
   mode = 'prompt',
   currentPrompt,
+  storyId,
+  characterName,
+  characterRole,
   onClose,
   onApply,
 }: PromptOptimizerDrawerProps) {
@@ -76,21 +84,32 @@ export default function PromptOptimizerDrawer({
     try {
       const turn = { role: 'user' as const, content: instruction }
       const stream =
-        mode === 'art_style'
-          ? streamArtStyleOptimize(
+        mode === 'character'
+          ? streamCharacterOptimize(
+              storyId ?? 0,
               {
-                current_style: currentPrompt,
+                character_name: characterName ?? '',
+                character_role: characterRole ?? '',
+                current_appearance: currentPrompt,
                 messages: [...history, turn],
               },
               controller.signal,
             )
-          : streamPromptOptimize(
-              {
-                current_prompt: currentPrompt,
-                messages: [...history, turn],
-              },
-              controller.signal,
-            )
+          : mode === 'art_style'
+            ? streamArtStyleOptimize(
+                {
+                  current_style: currentPrompt,
+                  messages: [...history, turn],
+                },
+                controller.signal,
+              )
+            : streamPromptOptimize(
+                {
+                  current_prompt: currentPrompt,
+                  messages: [...history, turn],
+                },
+                controller.signal,
+              )
 
       for await (const delta of stream) {
         received += delta
@@ -177,7 +196,11 @@ export default function PromptOptimizerDrawer({
   return (
     <>
       <Drawer
-        title={copy.drawerTitle}
+        title={
+          mode === 'character' && characterName
+            ? `${copy.drawerTitle}：${characterName}`
+            : copy.drawerTitle
+        }
         open={open}
         onClose={handleClose}
         width={520}

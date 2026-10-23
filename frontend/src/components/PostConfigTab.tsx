@@ -12,7 +12,12 @@ import { SaveOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { api, ApiError, getErrorMessage } from '../api/client'
-import type { Story, StoryPostConfig } from '../types'
+import CopyOptionsModal from './CopyOptionsModal'
+import type {
+  GeneratedCopyOption,
+  Story,
+  StoryPostConfig,
+} from '../types'
 
 interface PostConfigTabProps {
   story: Story
@@ -43,6 +48,9 @@ export default function PostConfigTab({
   const [form] = Form.useForm<PostConfigFormValues>()
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
+  // AI 一次生成多份方案，先在弹窗里对比，再由用户选用其中一份
+  const [copyOptions, setCopyOptions] = useState<GeneratedCopyOption[]>([])
+  const [optionsOpen, setOptionsOpen] = useState(false)
 
   // 配置加载完成或保存后同步到表单
   useEffect(() => {
@@ -79,9 +87,9 @@ export default function PostConfigTab({
     setGenerating(true)
     try {
       const copy = await api.generateCopy(story.id)
-      // 生成结果只填入表单，不自动保存，避免覆盖用户已编辑的内容
-      form.setFieldsValue({ title: copy.title, content: copy.content })
-      message.success('文案已生成，确认后请点击保存')
+      // 先展示方案列表，用户选定后才填入表单，且不自动保存
+      setCopyOptions(copy.options)
+      setOptionsOpen(true)
     } catch (error) {
       if (error instanceof ApiError && error.code === 'DEEPSEEK_KEY_MISSING') {
         modal.confirm({
@@ -97,6 +105,15 @@ export default function PostConfigTab({
     } finally {
       setGenerating(false)
     }
+  }
+
+  /** 采用某个方案：只填表单，仍由用户手动点击「保存配置」落库。 */
+  const applyOption = (options: GeneratedCopyOption[]) => {
+    const option = options[0]
+    if (!option) return
+    form.setFieldsValue({ title: option.title, content: option.content })
+    setOptionsOpen(false)
+    message.success(`已采用「${option.style}」方案，确认后请点击保存`)
   }
 
   return (
@@ -169,6 +186,15 @@ export default function PostConfigTab({
           </Button>
         </Space>
       </div>
+
+      <CopyOptionsModal
+        open={optionsOpen}
+        options={copyOptions}
+        generating={generating}
+        onApply={applyOption}
+        onRegenerate={() => void handleGenerate()}
+        onClose={() => setOptionsOpen(false)}
+      />
     </div>
   )
 }

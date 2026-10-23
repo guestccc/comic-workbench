@@ -44,6 +44,32 @@ export interface ArtStyleOptimizePayload {
   messages: PromptOptimizeMessage[]
 }
 
+/** AI 优化角色外形描述的请求；姓名与身份仅作上下文。 */
+export interface CharacterOptimizePayload {
+  character_name: string
+  character_role: string
+  current_appearance: string
+  messages: PromptOptimizeMessage[]
+}
+
+/** 从生图平台同步回来的单个角色：名字用于匹配，外形整体覆盖。 */
+export interface CharacterSyncItem {
+  name: string
+  appearance: string
+}
+
+/** 角色卡同步结果摘要。 */
+export interface CharacterSyncResult {
+  /** 按名匹配后更新了外形的角色 */
+  updated_names: string[]
+  /** 平台返回了但工作台还没有的新角色 */
+  created_names: string[]
+  /** 人物回顾被 AI 重写的分镜页页码 */
+  review_updated_pages: number[]
+  /** 未配置 Key 或没有受影响页面时跳过人物回顾同步的原因 */
+  review_warning: string | null
+}
+
 export interface Story {
   id: number
   name: string
@@ -99,10 +125,14 @@ export interface StoryboardPage {
   narration_sub: string
   dialogues: string[]
   shot_type: StoryboardShotType
+  /** 机位方位：正面 / 45°侧面 / 正侧面 / 背面 / 过肩视角 / 俯视 / 仰视 / 主观视角 等 */
+  camera_angle: string
   image_prompt: string
+  /** 成品图地址；有图即视为该页已完成（服务端按文件是否存在计算） */
+  image_url: string | null
 }
 
-export type StoryboardPagePayload = Omit<StoryboardPage, 'page_number'>
+export type StoryboardPagePayload = Omit<StoryboardPage, 'page_number' | 'image_url'>
 
 /** 故事拆解结果：优化后文章、角色卡与分镜页。 */
 export interface StoryBreakdown {
@@ -112,6 +142,8 @@ export interface StoryBreakdown {
   characters: CharacterCard[]
   /** @deprecated 新流程不再生成人物合影提示词；字段保留以兼容旧数据。 */
   group_photo_prompt: string
+  /** 最终确认的人物合照地址；由服务端按文件是否存在计算 */
+  group_photo_url: string | null
   pages: StoryboardPage[]
   art_style_id: string | null
   art_style_name: string | null
@@ -169,8 +201,17 @@ export interface UploadResult {
   url: string
 }
 
-export interface GeneratedCopy {
-  story_id: number
+/** AI 生成的一个可选文案方案：方案名 + 特点 + 标题正文。 */
+export interface GeneratedCopyOption {
+  style: string
+  feature: string
   title: string
   content: string
+  recommended: boolean
+  recommend_reason: string
+}
+
+export interface GeneratedCopy {
+  story_id: number
+  options: GeneratedCopyOption[]
 }

@@ -28,6 +28,10 @@ from .config import (
     MAX_CHARACTER_GROUP_PROMPT_LENGTH,
     MAX_CHARACTER_NAME_LENGTH,
     MAX_CHARACTER_ROLE_LENGTH,
+    MAX_COPY_OPTION_FEATURE_LENGTH,
+    MAX_COPY_OPTION_REASON_LENGTH,
+    MAX_COPY_OPTION_STYLE_LENGTH,
+    MAX_PAGE_CAMERA_ANGLE_LENGTH,
     MAX_PAGE_CHARACTERS,
     MAX_PAGE_DIALOGUES,
     MAX_PAGE_DIALOGUE_LENGTH,
@@ -217,6 +221,84 @@ class PromptOptimizeRequest(BaseModel):
         return self
 
 
+class CharacterOptimizeRequest(BaseModel):
+    """AI 优化角色设定卡外形描述；对话规则与启动提示词一致。"""
+
+    character_name: str = Field(min_length=1, max_length=MAX_CHARACTER_NAME_LENGTH)
+    character_role: str = Field(default="", max_length=MAX_CHARACTER_ROLE_LENGTH)
+    current_appearance: str = Field(
+        min_length=1, max_length=MAX_CHARACTER_APPEARANCE_LENGTH
+    )
+    messages: list[PromptOptimizeMessage] = Field(
+        min_length=1, max_length=MAX_PROMPT_OPTIMIZE_MESSAGES
+    )
+
+    @field_validator("character_name", "current_appearance")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator("character_role")
+    @classmethod
+    def _strip_optional(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _validate_conversation(self) -> "CharacterOptimizeRequest":
+        if self.messages[-1].role != "user":
+            raise ValueError("最后一条消息必须是用户消息")
+
+        total_chars = len(self.character_name) + len(self.character_role) + len(
+            self.current_appearance
+        ) + sum(len(message.content) for message in self.messages)
+        if total_chars > MAX_PROMPT_OPTIMIZE_TOTAL_CHARS:
+            raise ValueError(
+                f"外形描述与对话总长度不能超过 {MAX_PROMPT_OPTIMIZE_TOTAL_CHARS} 字符"
+            )
+        return self
+
+
+class CharacterSyncItem(BaseModel):
+    """从生图平台同步回来的单个角色：名字用于匹配，外形整体覆盖。"""
+
+    name: str = Field(min_length=1, max_length=MAX_CHARACTER_NAME_LENGTH)
+    appearance: str = Field(
+        min_length=1, max_length=MAX_CHARACTER_APPEARANCE_LENGTH
+    )
+
+    @field_validator("name", "appearance")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+
+class CharacterSyncRequest(BaseModel):
+    """同步生图平台返回的角色卡；由前端解析原始文本后提交。"""
+
+    characters: list[CharacterSyncItem] = Field(
+        min_length=1, max_length=MAX_CHARACTER_CARDS
+    )
+
+
+class CharacterSyncResult(BaseModel):
+    """同步结果摘要：哪些角色卡被更新/新增，分镜人物回顾是否同步。"""
+
+    # 按名匹配后更新了外形的角色
+    updated_names: list[str]
+    # 平台返回了但工作台还没有的新角色
+    created_names: list[str]
+    # 人物回顾被 AI 重写的分镜页页码
+    review_updated_pages: list[int]
+    # 未配置 Key 或没有受影响页面时跳过人物回顾同步的原因；正常同步为 None
+    review_warning: str | None = None
+
+
 class ArtStyleOptimizeRequest(BaseModel):
     """AI 优化画风描述请求；对话规则与启动提示词一致。"""
 
@@ -368,6 +450,8 @@ class StoryboardPagePayload(BaseModel):
         default_factory=list, max_length=MAX_PAGE_DIALOGUES
     )
     shot_type: StoryboardShotType
+    # 机位方位（如「过肩视角」「俯视·侧面」）；允许为空以兼容旧数据，新拆解由技能强制填写
+    camera_angle: str = Field(default="", max_length=MAX_PAGE_CAMERA_ANGLE_LENGTH)
     image_prompt: str = Field(
         min_length=1, max_length=MAX_PAGE_IMAGE_PROMPT_LENGTH
     )
@@ -389,7 +473,7 @@ class StoryboardPagePayload(BaseModel):
             raise ValueError("不能为空")
         return value
 
-    @field_validator("narration_highlight", "page_role")
+    @field_validator("narration_highlight", "page_role", "camera_angle")
     @classmethod
     def _strip_optional_text(cls, value: str) -> str:
         return value.strip()
@@ -427,6 +511,8 @@ class StoryboardPagePayload(BaseModel):
 
 class StoryboardPageRead(StoryboardPagePayload):
     page_number: int = Field(ge=1, le=MAX_BREAKDOWN_PAGES)
+    # 成品图访问地址；有图即视为该页已完成。由服务端按文件是否存在计算，不接受写入
+    image_url: str | None = None
 
 
 class StoryBreakdownUpdate(BaseModel):
@@ -514,6 +600,8 @@ class StoryBreakdownRead(_TimestampMixin):
     optimized_content: str
     characters: list[CharacterCard]
     group_photo_prompt: str
+    # 最终确认的人物合照访问地址；由服务端按文件是否存在计算，不接受写入
+    group_photo_url: str | None = None
     pages: list[StoryboardPageRead]
     # 生成时使用的画风快照；画风被删除时仍保留旧值
     art_style_id: str | None = None
@@ -601,7 +689,27 @@ class GenerateRequest(BaseModel):
     story_id: int = Field(gt=0)
 
 
+class GeneratedCopyOption(BaseModel):
+    """一个可选文案方案：方案名、特点、标题正文，以及是否为推荐方案。"""
+
+    style: str = Field(min_length=1, max_length=MAX_COPY_OPTION_STYLE_LENGTH)
+    feature: str = Field(min_length=1, max_length=MAX_COPY_OPTION_FEATURE_LENGTH)
+    title: str = Field(min_length=1, max_length=MAX_POST_CONFIG_TITLE_LENGTH)
+    content: str = Field(min_length=1, max_length=MAX_POST_CONTENT_LENGTH)
+    recommended: bool = False
+    recommend_reason: str = Field(default="", max_length=MAX_COPY_OPTION_REASON_LENGTH)
+
+
+class GeneratedCopyOptions(BaseModel):
+    """DeepSeek 原始输出。
+
+    契约要求 3 个方案；这里放宽到 2～4 个，模型偶尔多给/少给时仍能展示，
+    避免整次生成因为数量偏差直接失败。
+    """
+
+    options: list[GeneratedCopyOption] = Field(min_length=2, max_length=4)
+
+
 class GenerateResponse(BaseModel):
     story_id: int
-    title: str
-    content: str
+    options: list[GeneratedCopyOption]

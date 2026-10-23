@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   App,
+  AutoComplete,
   Button,
   Collapse,
   Empty,
@@ -22,6 +23,7 @@ import {
   MenuUnfoldOutlined,
 } from '@ant-design/icons'
 import StoryCompareModal from './StoryCompareModal'
+import ImageUpload from './ImageUpload'
 import { api, getErrorMessage } from '../api/client'
 import type {
   Story,
@@ -56,6 +58,7 @@ interface PageFormValues {
   narration_sub: string
   dialogues_text: string
   shot_type: StoryboardShotType
+  camera_angle: string
   image_prompt: string
 }
 
@@ -64,6 +67,18 @@ const SHOT_TYPE_OPTIONS: { value: StoryboardShotType; label: string }[] = [
   { value: '中景', label: '中景' },
   { value: '特写', label: '特写' },
 ]
+
+/** 机位方位候选词（允许自由输入组合，如「俯视·侧面」）。 */
+const CAMERA_ANGLE_OPTIONS = [
+  '正面平视',
+  '45°侧面',
+  '正侧面',
+  '背面',
+  '过肩视角',
+  '俯视',
+  '仰视',
+  '主观视角',
+].map((value) => ({ value }))
 
 /** 页面作用：第 1 页固定为钩子封面，其余按本页在故事中的功能选择。 */
 const PAGE_ROLE_OPTIONS = [
@@ -95,6 +110,9 @@ function parseDialogues(text: string | undefined): string[] {
     .filter(Boolean)
 }
 
+/** 成品图大小上限（与后端 MAX_PAGE_IMAGE_BYTES 保持一致，格式校验由 ImageUpload 统一处理）。 */
+const PAGE_IMAGE_MAX_SIZE = 15 * 1024 * 1024
+
 /**
  * 分镜头脚本 tab。
  *
@@ -124,14 +142,82 @@ export default function StoryboardTab({
   const [optimizedText, setOptimizedText] = useState('')
   const [optimizedSaving, setOptimizedSaving] = useState(false)
 
+  // 成品图上传中的页码集合；imageVersions 用于替换图片后打破浏览器缓存
+  const [imageBusy, setImageBusy] = useState<Record<number, boolean>>({})
+  const [imageVersions, setImageVersions] = useState<Record<number, number>>({})
+
   /** 复制单页生图提示词。 */
   const handleCopyPrompt = async (page: StoryboardPage) => {
     try {
-      await copyText(formatImagePrompt(page.image_prompt))
+      await copyText(
+        formatImagePrompt(
+          page.image_prompt,
+          page.page_number,
+          page.dialogues,
+          page.camera_angle,
+        ),
+      )
       message.success(`第 ${page.page_number} 页生图提示词已复制`)
     } catch {
       message.error('复制失败，请手动选中后复制')
     }
+  }
+
+  /** 上传 / 替换某页成品图；上传成功即视为该页完成。类型与大小由 ImageUpload 统一校验。 */
+  const handleUploadImage = async (page: StoryboardPage, file: File) => {
+    if (!breakdown) return
+
+    setImageBusy((previous) => ({ ...previous, [page.page_number]: true }))
+    try {
+      await api.uploadStoryboardPageImage(
+        breakdown.story_id,
+        page.page_number,
+        file,
+      )
+      setImageVersions((previous) => ({
+        ...previous,
+        [page.page_number]: Date.now(),
+      }))
+      message.success(`第 ${page.page_number} 页成品图已上传，标记为完成`)
+      await onRefresh()
+    } catch (error) {
+      message.error(getErrorMessage(error))
+      // 抛出后由 ImageUpload 保持上传弹窗打开，方便重试
+      throw error
+    } finally {
+      setImageBusy((previous) => ({ ...previous, [page.page_number]: false }))
+    }
+  }
+
+  /** 删除某页成品图，取消完成标记。 */
+  const handleDeleteImage = (page: StoryboardPage) => {
+    if (!breakdown) return
+    modal.confirm({
+      title: `删除第 ${page.page_number} 页的成品图？`,
+      content: '删除后该页恢复为未完成状态，图片文件会从本地删除。',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await api.deleteStoryboardPageImage(
+            breakdown.story_id,
+            page.page_number,
+          )
+          message.success('成品图已删除')
+          await onRefresh()
+        } catch (error) {
+          message.error(getErrorMessage(error))
+        }
+      },
+    })
+  }
+
+  /** 替换图片后 URL 不变，用版本号参数强制浏览器重新加载。 */
+  const pageImageSrc = (page: StoryboardPage): string | null => {
+    if (!page.image_url) return null
+    const version = imageVersions[page.page_number]
+    return version ? `${page.image_url}?v=${version}` : page.image_url
   }
 
   const openOptimized = () => {
@@ -178,6 +264,7 @@ export default function StoryboardTab({
       narration_sub: page.narration_sub,
       dialogues_text: page.dialogues.join('\n'),
       shot_type: page.shot_type,
+      camera_angle: page.camera_angle,
       image_prompt: page.image_prompt,
     })
     setEditOpen(true)
@@ -207,6 +294,7 @@ export default function StoryboardTab({
       narration_sub: values.narration_sub,
       dialogues: parseDialogues(values.dialogues_text),
       shot_type: values.shot_type,
+      camera_angle: (values.camera_angle ?? '').trim(),
       image_prompt: values.image_prompt,
     }
 
@@ -306,6 +394,9 @@ export default function StoryboardTab({
     label: card.role ? `${card.name}（${card.role}）` : card.name,
   }))
 
+  // 有成品图的页数，用于顶部进度提示
+  const doneCount = breakdown.pages.filter((page) => page.image_url).length
+
   return (
     <div>
       <div className="story-tab-toolbar">
@@ -313,6 +404,11 @@ export default function StoryboardTab({
           <Typography.Text type="secondary">
             共 {breakdown.pages.length} 页
           </Typography.Text>
+          {breakdown.pages.length > 0 && (
+            <Typography.Text type="secondary">
+              · 已完成 {doneCount} 页
+            </Typography.Text>
+          )}
           {breakdown.pages.length > 0 && (
             <Typography.Text type="secondary">
               · 第 1 页为钩子封面 · 提示词使用 {'{{角色名}}'} 变量
@@ -390,6 +486,8 @@ export default function StoryboardTab({
             key: String(page.page_number),
             label: (
               <div className="storyboard-page-label">
+                {/* 已完成标记放在页码前面，扫一眼即可分辨进度 */}
+                {page.image_url && <Tag color="success">已完成</Tag>}
                 <Typography.Text strong className="storyboard-page-title">
                   第 {page.page_number} 页
                 </Typography.Text>
@@ -400,6 +498,7 @@ export default function StoryboardTab({
                   </Tag>
                 )}
                 {page.is_flashback && <Tag color="blue">回忆页</Tag>}
+                {page.camera_angle && <Tag color="cyan">{page.camera_angle}</Tag>}
                 <Tag>{page.shot_type}</Tag>
                 <Typography.Text
                   type="secondary"
@@ -415,6 +514,16 @@ export default function StoryboardTab({
                 size="small"
                 onClick={(event) => event.stopPropagation()}
               >
+                {/* 标题栏直接上传成品图，无需展开折叠面板；交互与展开区一致（弹窗选择或粘贴） */}
+                <ImageUpload
+                  variant="button"
+                  imageUrl={pageImageSrc(page)}
+                  uploadText="上传成品图"
+                  replaceText="替换图片"
+                  maxSizeBytes={PAGE_IMAGE_MAX_SIZE}
+                  onUpload={(file) => handleUploadImage(page, file)}
+                  disabled={imageBusy[page.page_number]}
+                />
                 <Button
                   size="small"
                   icon={<CopyOutlined />}
@@ -442,6 +551,20 @@ export default function StoryboardTab({
             children: (
               // 纯文案排版：标签在上、内容在下，不使用表格，便于直接阅读与复制
               <div className="storyboard-script">
+                <div className="script-field">
+                  <span className="script-label">成品图</span>
+                  <ImageUpload
+                    variant="thumb"
+                    imageUrl={pageImageSrc(page)}
+                    uploadText="上传成品图并标记完成"
+                    replaceText="替换图片"
+                    maxSizeBytes={PAGE_IMAGE_MAX_SIZE}
+                    onUpload={(file) => handleUploadImage(page, file)}
+                    onRemove={() => handleDeleteImage(page)}
+                    disabled={imageBusy[page.page_number]}
+                  />
+                </div>
+
                 <div className="script-field">
                   <span className="script-label">本页故事内容</span>
                   <p className="script-text">{page.story_content}</p>
@@ -515,9 +638,18 @@ export default function StoryboardTab({
                 </div>
 
                 <div className="script-field">
-                  <span className="script-label">镜头景别</span>
+                  <span className="script-label">镜头机位 / 景别</span>
                   <div>
-                    <Tag>{page.shot_type}</Tag>
+                    <Space size={4}>
+                      {page.camera_angle ? (
+                        <Tag color="cyan">{page.camera_angle}</Tag>
+                      ) : (
+                        <Typography.Text type="secondary">
+                          机位未设置
+                        </Typography.Text>
+                      )}
+                      <Tag>{page.shot_type}</Tag>
+                    </Space>
                   </div>
                 </div>
 
@@ -535,7 +667,11 @@ export default function StoryboardTab({
                     </Button>
                   </span>
                   <div className="prompt-sections">
-                    {parseImagePrompt(page.image_prompt).map(
+                    {parseImagePrompt(
+                      page.image_prompt,
+                      page.dialogues,
+                      page.camera_angle,
+                    ).map(
                       (section, index) => (
                         <div
                           className="prompt-section"
@@ -694,6 +830,19 @@ export default function StoryboardTab({
             rules={[{ required: true, message: '请选择景别' }]}
           >
             <Select options={SHOT_TYPE_OPTIONS} />
+          </Form.Item>
+
+          <Form.Item
+            name="camera_angle"
+            label="机位方位"
+            rules={[{ required: true, message: '请填写机位方位' }]}
+            extra="如「正面平视」「过肩视角」「俯视·侧面」；同一场景的相邻页不要使用相同的机位+景别组合。"
+          >
+            <AutoComplete
+              options={CAMERA_ANGLE_OPTIONS}
+              maxLength={50}
+              placeholder="选择或输入机位方位"
+            />
           </Form.Item>
 
           <Form.Item

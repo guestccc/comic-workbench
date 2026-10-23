@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
-from tests.conftest import make_response
+from tests.conftest import make_copy_options, make_response
 
 
 def _generate(client, story_id: int):
@@ -33,8 +35,16 @@ def test_generate_success_not_persisted(client, story, configure_key, mock_deeps
     assert response.status_code == 200
     data = response.json()
     assert data["story_id"] == story["id"]
-    assert data["title"] == "测试标题"
-    assert data["content"] == "这是测试正文。#条漫"
+    options = data["options"]
+    assert len(options) == 3
+    assert options[0]["style"] == "悬念反差"
+    assert options[0]["feature"]
+    assert options[0]["title"] == "测试标题"
+    assert options[0]["content"] == "这是测试正文。#条漫"
+    # 有且只有一个推荐方案，并附带推荐理由
+    assert sum(item["recommended"] for item in options) == 1
+    assert options[0]["recommended"] is True
+    assert options[0]["recommend_reason"]
 
     # 生成结果不自动入库
     assert client.get("/api/posts").json() == []
@@ -45,6 +55,9 @@ def test_generate_success_not_persisted(client, story, configure_key, mock_deeps
     assert story["content"] in messages[1]["content"]
     assert "json" in messages[0]["content"]
     assert "重要输出要求" in messages[0]["content"]
+    # 新契约要求一次给出多个方案，而不是单个 title/content
+    assert "options" in messages[0]["content"]
+    assert "3 个" in messages[0]["content"]
 
 
 def test_prompt_placeholders_are_replaced(client, story, configure_key, mock_deepseek):
@@ -215,16 +228,63 @@ def test_bad_output_then_success(client, story, configure_key, mock_deepseek):
     ]
     response = _generate(client, story["id"])
     assert response.status_code == 200
-    assert response.json()["title"] == "测试标题"
+    assert response.json()["options"][0]["title"] == "测试标题"
     assert len(mock_deepseek["calls"]) == 2
 
 
 def test_markdown_fenced_json_accepted(client, story, configure_key, mock_deepseek):
-    fenced = '```json\n{"title": "围栏标题", "content": "围栏正文"}\n```'
+    payload = {"options": make_copy_options("围栏标题", "围栏正文")}
+    fenced = f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
     mock_deepseek["response"] = make_response(raw_content=fenced)
     response = _generate(client, story["id"])
     assert response.status_code == 200
-    assert response.json()["title"] == "围栏标题"
+    assert response.json()["options"][0]["title"] == "围栏标题"
+
+
+def _raw_options(options: list[dict], **kwargs) -> str:
+    return make_response(
+        raw_content=json.dumps({"options": options}, ensure_ascii=False), **kwargs
+    )
+
+
+def test_missing_recommendation_falls_back_to_first(
+    client, story, configure_key, mock_deepseek
+):
+    """模型漏标推荐时，保留第一个方案为推荐，不让整次生成失败。"""
+    options = make_copy_options()
+    for item in options:
+        item["recommended"] = False
+    mock_deepseek["response"] = _raw_options(options)
+
+    response = _generate(client, story["id"])
+    assert response.status_code == 200
+    data = response.json()["options"]
+    assert [item["recommended"] for item in data] == [True, False, False]
+
+
+def test_multiple_recommendations_kept_only_first(
+    client, story, configure_key, mock_deepseek
+):
+    """模型标了多个推荐时，只保留第一个，避免前端出现多个「推荐」。"""
+    options = make_copy_options()
+    options[1]["recommended"] = True
+    mock_deepseek["response"] = _raw_options(options)
+
+    response = _generate(client, story["id"])
+    assert response.status_code == 200
+    data = response.json()["options"]
+    assert [item["recommended"] for item in data] == [True, False, False]
+
+
+def test_too_few_options_is_bad_output(client, story, configure_key, mock_deepseek):
+    """只有 1 个方案没有可选性，按格式异常重试后报错。"""
+    options = [make_copy_options()[0]]
+    mock_deepseek["response"] = [_raw_options(options), _raw_options(options)]
+
+    response = _generate(client, story["id"])
+    assert response.status_code == 502
+    assert response.json()["code"] == "DEEPSEEK_BAD_OUTPUT"
+    assert len(mock_deepseek["calls"]) == 2
 
 
 def test_truncated_output_retries_and_fails(client, story, configure_key, mock_deepseek):

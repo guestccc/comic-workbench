@@ -259,6 +259,27 @@ def test_page_role_saved_and_optional(client):
     assert _put_page(client, story_id, 3, page_role="x" * 21).status_code == 422
 
 
+def test_camera_angle_saved_and_optional(client):
+    """机位方位写回后原样返回；未传时默认为空字符串（兼容旧拆解数据）。"""
+    story, _ = _prepare(client)
+    story_id = story["id"]
+
+    response = _put_page(client, story_id, 1, camera_angle="  过肩视角  ")
+    assert response.status_code == 200
+    assert response.json()["camera_angle"] == "过肩视角"
+
+    # 旧数据未包含该字段，仍可正常写入并读回空字符串
+    response = _put_page(client, story_id, 2)
+    assert response.status_code == 200
+    assert response.json()["camera_angle"] == ""
+
+    pages = client.get(f"/api/stories/{story_id}/breakdown").json()["pages"]
+    assert [page["camera_angle"] for page in pages] == ["过肩视角", ""]
+
+    # 超过长度限制会被拒绝
+    assert _put_page(client, story_id, 3, camera_angle="x" * 51).status_code == 422
+
+
 def test_page_requires_breakdown(client):
     _save_art_styles(client, [STYLE_A])
     story = _create_styled_story(client)

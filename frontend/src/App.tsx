@@ -85,14 +85,7 @@ export default function App() {
             {resolvePageTitle(location.pathname)}
           </Typography.Text>
         </Header>
-        <Content
-          className={
-            // 故事详情页内容较宽，取消最大宽度限制，让分镜铺满屏幕
-            location.pathname.startsWith('/stories/')
-              ? 'app-content app-content-wide'
-              : 'app-content'
-          }
-        >
+        <Content className="app-content">
           <Routes>
             <Route path="/" element={<Navigate to="/prompt" replace />} />
             <Route path="/prompt" element={<PromptPage />} />

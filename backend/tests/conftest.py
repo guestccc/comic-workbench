@@ -104,10 +104,43 @@ def mock_deepseek_stream(monkeypatch):
     return state
 
 
+def make_copy_options(
+    title: str = "测试标题", content: str = "这是测试正文。#条漫"
+) -> list[dict]:
+    """构造 AI 文案生成的默认 3 个方案；首项为推荐方案。"""
+    return [
+        {
+            "style": "悬念反差",
+            "feature": "用反差和悬念制造好奇，信息流里最容易让人停下滑动。",
+            "title": title,
+            "content": content,
+            "recommended": True,
+            "recommend_reason": "故事的卡点最适合做成悬念，点击率最高。",
+        },
+        {
+            "style": "情绪共鸣",
+            "feature": "放大主角的委屈与不甘，让读者代入并想留言。",
+            "title": "备选标题一",
+            "content": "备选正文一。#条漫",
+            "recommended": False,
+            "recommend_reason": "",
+        },
+        {
+            "style": "利益直给",
+            "feature": "开头直接给结论与反转，适合没耐心的读者。",
+            "title": "备选标题二",
+            "content": "备选正文二。#条漫",
+            "recommended": False,
+            "recommend_reason": "",
+        },
+    ]
+
+
 def make_response(
     *,
     title: str = "测试标题",
     content: str = "这是测试正文。#条漫",
+    options: list[dict] | None = None,
     status_code: int = 200,
     raw_content: str | None = None,
     finish_reason: str = "stop",
@@ -115,7 +148,8 @@ def make_response(
     """构造 DeepSeek 兼容响应；raw_content 用于模拟非法输出。"""
     if raw_content is None:
         raw_content = json.dumps(
-            {"title": title, "content": content}, ensure_ascii=False
+            {"options": options or make_copy_options(title, content)},
+            ensure_ascii=False,
         )
     payload = {
         "choices": [

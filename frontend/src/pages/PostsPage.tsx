@@ -19,8 +19,15 @@ import { PlusOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
+import CopyOptionsModal from '../components/CopyOptionsModal'
 import { api, ApiError, getErrorMessage } from '../api/client'
-import type { Post, PostStatus, SettingsData, Story } from '../types'
+import type {
+  GeneratedCopyOption,
+  Post,
+  PostStatus,
+  SettingsData,
+  Story,
+} from '../types'
 
 interface PostFormValues {
   story_id: number
@@ -46,6 +53,9 @@ export default function PostsPage() {
   const [editing, setEditing] = useState<Post | null>(null)
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
+  // AI 返回的多个文案方案；用户选定后才填入表单
+  const [copyOptions, setCopyOptions] = useState<GeneratedCopyOption[]>([])
+  const [optionsOpen, setOptionsOpen] = useState(false)
   const [storyFilter, setStoryFilter] = useState<number | undefined>()
   const [statusFilter, setStatusFilter] = useState<PostStatus | undefined>()
   const [keyword, setKeyword] = useState('')
@@ -128,8 +138,9 @@ export default function PostsPage() {
     setGenerating(true)
     try {
       const copy = await api.generateCopy(storyId)
-      form.setFieldsValue({ title: copy.title, content: copy.content })
-      message.success('文案已生成，可继续编辑后保存')
+      // 先让用户对比多个方案，选定后再填表
+      setCopyOptions(copy.options)
+      setOptionsOpen(true)
     } catch (error) {
       if (error instanceof ApiError && error.code === 'DEEPSEEK_KEY_MISSING') {
         modal.confirm({
@@ -144,6 +155,46 @@ export default function PostsPage() {
       }
     } finally {
       setGenerating(false)
+    }
+  }
+
+  /**
+   * 采用方案：单个填入表单继续编辑；多个说明用户想把一个故事
+   * 拆成多次发作品，直接按选中数量各建一条草稿。
+   */
+  const applyCopyOption = async (selected: GeneratedCopyOption[]) => {
+    if (selected.length === 0) return
+    if (selected.length === 1) {
+      form.setFieldsValue({
+        title: selected[0].title,
+        content: selected[0].content,
+      })
+      setOptionsOpen(false)
+      message.success(`已采用「${selected[0].style}」方案，可继续编辑后保存`)
+      return
+    }
+
+    setSaving(true)
+    try {
+      await Promise.all(
+        selected.map((option) =>
+          api.createPost({
+            story_id: form.getFieldValue('story_id') as number,
+            title: option.title,
+            content: option.content,
+            status: 'draft',
+          }),
+        ),
+      )
+      setOptionsOpen(false)
+      setOpen(false)
+      message.success(`已创建 ${selected.length} 条草稿，可分别编辑后发布`)
+    } catch (error) {
+      // 并发创建可能部分成功，提示后仍刷新列表，避免误以为全部失败
+      message.error(getErrorMessage(error))
+    } finally {
+      setSaving(false)
+      await load()
     }
   }
 
@@ -388,7 +439,7 @@ export default function PostsPage() {
               </Button>
               <Typography.Text type="secondary" className="modal-form-tip">
                 {keyConfigured
-                  ? '根据故事与启动提示词生成标题和正文，结果可继续编辑'
+                  ? '生成多个方案；可多选一次建多条草稿，单选则填入表单'
                   : '请先在设置页配置 DeepSeek API Key'}
               </Typography.Text>
             </Space>
@@ -425,6 +476,16 @@ export default function PostsPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <CopyOptionsModal
+        open={optionsOpen}
+        options={copyOptions}
+        generating={generating}
+        multiple={editing === null}
+        onApply={(selected) => void applyCopyOption(selected)}
+        onRegenerate={() => void handleGenerate()}
+        onClose={() => setOptionsOpen(false)}
+      />
     </div>
   )
 }

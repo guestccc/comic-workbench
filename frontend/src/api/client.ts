@@ -1,6 +1,9 @@
 import type {
   ArtStyleOptimizePayload,
   ArtStylesPayload,
+  CharacterOptimizePayload,
+  CharacterSyncItem,
+  CharacterSyncResult,
   GeneratedCopy,
   Post,
   PostStatus,
@@ -148,12 +151,53 @@ export const api = {
     request<void>(`/api/stories/${storyId}/breakdown/pages/${pageNumber}`, {
       method: 'DELETE',
     }),
+  /** 上传某页成品图；有图即视为该页完成，重复上传覆盖旧图 */
+  uploadStoryboardPageImage: (
+    storyId: number,
+    pageNumber: number,
+    file: File,
+  ) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request<StoryboardPage>(
+      `/api/stories/${storyId}/breakdown/pages/${pageNumber}/image`,
+      { method: 'POST', body: formData },
+    )
+  },
+  deleteStoryboardPageImage: (storyId: number, pageNumber: number) =>
+    request<void>(
+      `/api/stories/${storyId}/breakdown/pages/${pageNumber}/image`,
+      { method: 'DELETE' },
+    ),
+  /** 上传最终确认的人物合照；重复上传覆盖旧图，文件保存在本地 uploads 目录 */
+  uploadGroupPhoto: (storyId: number, file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request<StoryBreakdown>(
+      `/api/stories/${storyId}/breakdown/group-photo`,
+      { method: 'POST', body: formData },
+    )
+  },
+  deleteGroupPhoto: (storyId: number) =>
+    request<void>(`/api/stories/${storyId}/breakdown/group-photo`, {
+      method: 'DELETE',
+    }),
   clearStoryboardPages: (storyId: number) =>
     request<void>(`/api/stories/${storyId}/breakdown/pages`, {
       method: 'DELETE',
     }),
   deleteBreakdown: (storyId: number) =>
     request<void>(`/api/stories/${storyId}/breakdown`, { method: 'DELETE' }),
+
+  /**
+   * 同步生图平台返回的新版角色卡：按名覆盖外形、追加新角色，
+   * 并由后端 AI 联动重写受影响分镜页的「人物回顾」。
+   */
+  syncCharacters: (storyId: number, characters: CharacterSyncItem[]) =>
+    request<CharacterSyncResult>(
+      `/api/stories/${storyId}/breakdown/characters/sync`,
+      { method: 'POST', body: JSON.stringify({ characters }) },
+    ),
 
   // 每个故事一份的小红书发文配置
   getPostConfig: (storyId: number) =>
@@ -231,7 +275,10 @@ interface PromptOptimizeEvent {
  */
 async function* streamOptimization(
   path: string,
-  payload: PromptOptimizePayload | ArtStyleOptimizePayload,
+  payload:
+    | PromptOptimizePayload
+    | ArtStyleOptimizePayload
+    | CharacterOptimizePayload,
   signal?: AbortSignal,
 ): AsyncGenerator<string, void, void> {
   let response: Response
@@ -351,4 +398,17 @@ export function streamArtStyleOptimize(
   signal?: AbortSignal,
 ): AsyncGenerator<string, void, void> {
   return streamOptimization('/api/settings/art-styles/optimize', payload, signal)
+}
+
+/** 流式优化角色设定卡的外形描述。 */
+export function streamCharacterOptimize(
+  storyId: number,
+  payload: CharacterOptimizePayload,
+  signal?: AbortSignal,
+): AsyncGenerator<string, void, void> {
+  return streamOptimization(
+    `/api/stories/${storyId}/breakdown/characters/optimize`,
+    payload,
+    signal,
+  )
 }

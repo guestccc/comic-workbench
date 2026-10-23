@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path as FsPath
 
-from fastapi import APIRouter, Depends, Path, Query, Response
+from fastapi import APIRouter, Depends, File, Path, Query, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,13 +24,29 @@ from ..errors import AppError
 from ..models import Story, StoryBreakdown
 from ..schemas import (
     CharacterCard,
+    CharacterOptimizeRequest,
+    CharacterSyncRequest,
+    CharacterSyncResult,
     StoryboardPagePayload,
     StoryboardPageRead,
     StoryBreakdownRead,
     StoryBreakdownUpdate,
     StoryOptimizationAnalysis,
 )
-from ..services.deepseek import analyze_optimization_changes
+from ..services.deepseek import (
+    analyze_optimization_changes,
+    stream_character_optimization,
+    sync_character_reviews,
+)
+from ..services.files import (
+    delete_group_photo,
+    delete_page_image,
+    delete_story_page_images,
+    group_photo_url,
+    page_image_url,
+    save_group_photo,
+    save_page_image,
+)
 
 router = APIRouter(prefix="/api/stories", tags=["故事拆解"])
 
@@ -90,8 +108,9 @@ def _to_breakdown_read(
     breakdown: StoryBreakdown,
     story: Story,
     style: dict[str, str] | None,
+    upload_dir: FsPath,
 ) -> StoryBreakdownRead:
-    """组装响应模型，并计算原文 / 画风的过期标记。"""
+    """组装响应模型，并计算原文 / 画风的过期标记与每页成品图地址。"""
     pages = sorted(
         (
             StoryboardPageRead.model_validate(page)
@@ -99,6 +118,11 @@ def _to_breakdown_read(
         ),
         key=lambda page: page.page_number,
     )
+    # 成品图绑定由文件系统决定：uploads/pages/<story_id>/page-<页码>.<ext> 存在即已完成
+    for page in pages:
+        page.image_url = page_image_url(
+            upload_dir, breakdown.story_id, page.page_number
+        )
     return StoryBreakdownRead(
         id=breakdown.id,
         story_id=breakdown.story_id,
@@ -107,6 +131,8 @@ def _to_breakdown_read(
             CharacterCard.model_validate(card) for card in breakdown.characters
         ],
         group_photo_prompt=breakdown.group_photo_prompt,
+        # 合照绑定由文件系统决定：uploads/group-photos/<story_id>.<ext> 存在即有图
+        group_photo_url=group_photo_url(upload_dir, breakdown.story_id),
         pages=pages,
         art_style_id=breakdown.art_style_id,
         art_style_name=breakdown.art_style_name,
@@ -128,7 +154,7 @@ def _touch_source(breakdown: StoryBreakdown, story: Story) -> None:
     "/{story_id}/breakdown", response_model=StoryBreakdownRead | None
 )
 def get_breakdown(
-    story_id: int, db: Session = Depends(get_db)
+    story_id: int, request: Request, db: Session = Depends(get_db)
 ) -> StoryBreakdownRead | None:
     """读取拆解结果；尚未拆解时返回 null，前端按空态展示。"""
     story = _get_story_or_404(db, story_id)
@@ -136,7 +162,10 @@ def get_breakdown(
     if breakdown is None:
         return None
     return _to_breakdown_read(
-        breakdown, story, _resolve_story_style(db, story)
+        breakdown,
+        story,
+        _resolve_story_style(db, story),
+        request.app.state.app_settings.upload_dir,
     )
 
 
@@ -144,6 +173,7 @@ def get_breakdown(
 def update_breakdown(
     story_id: int,
     payload: StoryBreakdownUpdate,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> StoryBreakdownRead:
     """局部更新拆解头部信息；不存在时创建。
@@ -181,7 +211,9 @@ def update_breakdown(
 
     db.commit()
     db.refresh(breakdown)
-    return _to_breakdown_read(breakdown, story, style)
+    return _to_breakdown_read(
+        breakdown, story, style, request.app.state.app_settings.upload_dir
+    )
 
 
 @router.post(
@@ -261,6 +293,156 @@ def analyze_optimization(
     return result
 
 
+@router.post("/{story_id}/breakdown/characters/optimize")
+def optimize_character(
+    story_id: int,
+    payload: CharacterOptimizeRequest,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """AI 优化角色设定卡的外形描述，以 SSE 流式返回；Key 只在服务端使用。
+
+    用于把用户在生图平台中的形象调整同步回角色卡；本接口只生成文本，
+    是否写回由前端在用户确认后通过 PATCH breakdown 完成。
+    """
+    _get_story_or_404(db, story_id)
+    if _get_breakdown(db, story_id) is None:
+        raise AppError(
+            404,
+            "该故事还没有拆解结果，请先运行拆解生成角色卡",
+            "BREAKDOWN_NOT_FOUND",
+        )
+
+    api_key, _, _ = resolve_deepseek_key(db)
+    character_name = payload.character_name
+    character_role = payload.character_role
+    current_appearance = payload.current_appearance
+    messages = [message.model_dump() for message in payload.messages]
+    # 流式期间不持有数据库事务（与 settings.py 的提示词 / 画风优化一致）
+    db.rollback()
+
+    if api_key is None:
+        raise AppError(
+            409,
+            "尚未配置 DeepSeek API Key，请先到「设置」页面完成配置",
+            "DEEPSEEK_KEY_MISSING",
+        )
+
+    return StreamingResponse(
+        stream_character_optimization(
+            api_key,
+            character_name,
+            character_role,
+            current_appearance,
+            messages,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post(
+    "/{story_id}/breakdown/characters/sync",
+    response_model=CharacterSyncResult,
+)
+def sync_characters(
+    story_id: int,
+    payload: CharacterSyncRequest,
+    db: Session = Depends(get_db),
+) -> CharacterSyncResult:
+    """同步生图平台返回的新版角色卡，并联动更新分镜「人物回顾」。
+
+    流程：
+    1. 按角色名匹配：已存在的整体覆盖外形，不存在的作为新卡追加；
+    2. 找出登场角色中包含同步角色的分镜页，调用 DeepSeek 按新外形
+       重写这些页的人物回顾（生图提示词用 {{变量}} 引用角色卡，无需改动）；
+    3. AI 调用在数据库写入之前完成：调用失败时不落任何改动，避免
+       「角色卡更新了但回顾没同步」的中间状态；
+    4. 未配置 Key 时只更新角色卡，人物回顾保持原样并在结果中给出提示。
+    """
+    story = _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(
+            404,
+            "该故事还没有拆解结果，请先运行拆解生成角色卡",
+            "BREAKDOWN_NOT_FOUND",
+        )
+
+    # 在内存中先算好新角色卡列表与受影响页面，此时不写库
+    existing_cards = [CharacterCard.model_validate(card) for card in breakdown.characters]
+    cards_by_name = {card.name: card for card in existing_cards}
+    updated_names: list[str] = []
+    created_names: list[str] = []
+    for item in payload.characters:
+        card = cards_by_name.get(item.name)
+        if card is None:
+            card = CharacterCard(name=item.name, role="", appearance=item.appearance)
+            cards_by_name[item.name] = card
+            existing_cards.append(card)
+            created_names.append(item.name)
+        else:
+            card.appearance = item.appearance
+            updated_names.append(item.name)
+
+    synced_names = set(updated_names) | set(created_names)
+    # 登场角色中包含任一同步角色的页面，其人物回顾需要重写
+    affected_pages = [
+        page
+        for page in breakdown.pages
+        if synced_names & set(page.get("characters", []))
+    ]
+
+    api_key, _, _ = resolve_deepseek_key(db)
+    # 外部 HTTP 请求期间不持有数据库事务（与 analyze / optimize 一致）
+    db.rollback()
+
+    new_reviews: dict[int, str] = {}
+    review_warning: str | None = None
+    if not affected_pages:
+        review_warning = "没有分镜页登场这些角色，人物回顾无需更新"
+    elif api_key is None:
+        review_warning = (
+            "尚未配置 DeepSeek API Key：角色卡已更新，"
+            "但分镜人物回顾仍是旧外形，请配置 Key 后重新同步"
+        )
+    else:
+        new_reviews = sync_character_reviews(
+            api_key,
+            [card.model_dump() for card in existing_cards],
+            [
+                {
+                    "page_number": page.get("page_number"),
+                    "characters": page.get("characters", []),
+                    "character_review": page.get("character_review", ""),
+                }
+                for page in affected_pages
+            ],
+        )
+
+    # AI 成功（或无需调用）后才落库：角色卡 + 人物回顾同一事务提交
+    breakdown.characters = [card.model_dump() for card in existing_cards]
+    if new_reviews:
+        pages = []
+        for page in breakdown.pages:
+            page_number = page.get("page_number")
+            if page_number in new_reviews:
+                page = {**page, "character_review": new_reviews[page_number]}
+            pages.append(page)
+        breakdown.pages = pages
+    _touch_source(breakdown, story)
+    db.commit()
+
+    return CharacterSyncResult(
+        updated_names=updated_names,
+        created_names=created_names,
+        review_updated_pages=sorted(new_reviews),
+        review_warning=review_warning,
+    )
+
+
 @router.put(
     "/{story_id}/breakdown/pages/{page_number}",
     response_model=StoryboardPageRead,
@@ -268,6 +450,7 @@ def analyze_optimization(
 def upsert_page(
     story_id: int,
     payload: StoryboardPagePayload,
+    request: Request,
     page_number: int = Path(ge=1, le=MAX_BREAKDOWN_PAGES),
     db: Session = Depends(get_db),
 ) -> StoryboardPageRead:
@@ -293,7 +476,69 @@ def upsert_page(
     _touch_source(breakdown, story)
     db.commit()
     db.refresh(breakdown)
-    return StoryboardPageRead.model_validate(page)
+    read = StoryboardPageRead.model_validate(page)
+    read.image_url = page_image_url(
+        request.app.state.app_settings.upload_dir, story_id, page_number
+    )
+    return read
+
+
+@router.post(
+    "/{story_id}/breakdown/pages/{page_number}/image",
+    response_model=StoryboardPageRead,
+)
+def upload_page_image(
+    story_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    page_number: int = Path(ge=1, le=MAX_BREAKDOWN_PAGES),
+    db: Session = Depends(get_db),
+) -> StoryboardPageRead:
+    """上传某页的成品图；有成品图即视为该页已完成。
+
+    同页重复上传会覆盖旧图；文件按固定路径存储，重跑拆解后同页码自动挂回。
+    """
+    _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(
+            404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND"
+        )
+    page = next(
+        (
+            item
+            for item in breakdown.pages
+            if item.get("page_number") == page_number
+        ),
+        None,
+    )
+    if page is None:
+        raise AppError(404, f"第 {page_number} 页不存在", "PAGE_NOT_FOUND")
+
+    upload_dir = request.app.state.app_settings.upload_dir
+    save_page_image(file, upload_dir, story_id, page_number)
+    read = StoryboardPageRead.model_validate(page)
+    read.image_url = page_image_url(upload_dir, story_id, page_number)
+    return read
+
+
+@router.delete(
+    "/{story_id}/breakdown/pages/{page_number}/image", status_code=204
+)
+def remove_page_image(
+    story_id: int,
+    request: Request,
+    page_number: int = Path(ge=1, le=MAX_BREAKDOWN_PAGES),
+    db: Session = Depends(get_db),
+) -> Response:
+    """删除某页的成品图，取消完成标记；重复删除同样返回 204。"""
+    _get_story_or_404(db, story_id)
+    if _get_breakdown(db, story_id) is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+    delete_page_image(
+        request.app.state.app_settings.upload_dir, story_id, page_number
+    )
+    return Response(status_code=204)
 
 
 @router.delete(
@@ -301,10 +546,11 @@ def upsert_page(
 )
 def delete_page(
     story_id: int,
+    request: Request,
     page_number: int = Path(ge=1, le=MAX_BREAKDOWN_PAGES),
     db: Session = Depends(get_db),
 ) -> Response:
-    """删除单页；页码不存在时同样返回 204，便于重复清理。"""
+    """删除单页（连同成品图）；页码不存在时同样返回 204，便于重复清理。"""
     _get_story_or_404(db, story_id)
     breakdown = _get_breakdown(db, story_id)
     if breakdown is None:
@@ -318,6 +564,9 @@ def delete_page(
     if len(remaining) != len(breakdown.pages):
         breakdown.pages = remaining
         db.commit()
+    delete_page_image(
+        request.app.state.app_settings.upload_dir, story_id, page_number
+    )
     return Response(status_code=204)
 
 
@@ -325,7 +574,11 @@ def delete_page(
 def clear_pages(
     story_id: int, db: Session = Depends(get_db)
 ) -> Response:
-    """清空全部分镜页，保留优化文、人设卡与合影提示词。"""
+    """清空全部分镜页，保留优化文、人设卡与合影提示词。
+
+    成品图文件保留在磁盘上：重跑拆解后同页码写回时自动挂回，
+    避免重跑导致已完成的页面丢图。
+    """
     _get_story_or_404(db, story_id)
     breakdown = _get_breakdown(db, story_id)
     if breakdown is None:
@@ -337,14 +590,56 @@ def clear_pages(
     return Response(status_code=204)
 
 
+@router.post(
+    "/{story_id}/breakdown/group-photo", response_model=StoryBreakdownRead
+)
+def upload_group_photo(
+    story_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> StoryBreakdownRead:
+    """上传最终确认的人物合照；重复上传覆盖旧图。
+
+    合照只存在本地 uploads 目录，供角色卡 tab 展示与核对，不参与生图流程。
+    """
+    story = _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(
+            404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND"
+        )
+
+    upload_dir = request.app.state.app_settings.upload_dir
+    save_group_photo(file, upload_dir, story_id)
+    return _to_breakdown_read(
+        breakdown, story, _resolve_story_style(db, story), upload_dir
+    )
+
+
+@router.delete("/{story_id}/breakdown/group-photo", status_code=204)
+def remove_group_photo(
+    story_id: int, request: Request, db: Session = Depends(get_db)
+) -> Response:
+    """删除人物合照；重复删除同样返回 204，保持幂等。"""
+    _get_story_or_404(db, story_id)
+    if _get_breakdown(db, story_id) is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+    delete_group_photo(request.app.state.app_settings.upload_dir, story_id)
+    return Response(status_code=204)
+
+
 @router.delete("/{story_id}/breakdown", status_code=204)
 def delete_breakdown(
-    story_id: int, db: Session = Depends(get_db)
+    story_id: int, request: Request, db: Session = Depends(get_db)
 ) -> Response:
-    """清空整份拆解结果；不存在时返回 204，便于重复清理。"""
+    """清空整份拆解结果（连同全部成品图与合照）；不存在时返回 204，便于重复清理。"""
     _get_story_or_404(db, story_id)
     breakdown = _get_breakdown(db, story_id)
     if breakdown is not None:
         db.delete(breakdown)
         db.commit()
+    upload_dir = request.app.state.app_settings.upload_dir
+    delete_story_page_images(upload_dir, story_id)
+    delete_group_photo(upload_dir, story_id)
     return Response(status_code=204)

@@ -15,14 +15,17 @@ from pydantic import BaseModel, Field, ValidationError
 from ..config import (
     ART_STYLE_OPTIMIZE_MAX_TOKENS,
     ART_STYLE_OPTIMIZE_SYSTEM_PROMPT,
+    CHARACTER_OPTIMIZE_MAX_TOKENS,
+    CHARACTER_OPTIMIZE_SYSTEM_PROMPT,
+    CHARACTER_REVIEW_SYNC_MAX_TOKENS,
+    CHARACTER_REVIEW_SYNC_SYSTEM_PROMPT,
     DEEPSEEK_API_URL,
     DEEPSEEK_CONNECT_TIMEOUT,
     DEEPSEEK_MAX_TOKENS,
     DEEPSEEK_MODEL,
     DEEPSEEK_READ_TIMEOUT,
     DEEPSEEK_TEMPERATURE,
-    MAX_POST_CONFIG_TITLE_LENGTH,
-    MAX_POST_CONTENT_LENGTH,
+    MAX_PAGE_TEXT_LENGTH,
     OPTIMIZE_ANALYZE_MAX_TOKENS,
     OPTIMIZE_ANALYZE_SYSTEM_PROMPT,
     OPTIMIZE_ANALYZE_TEMPERATURE,
@@ -31,7 +34,11 @@ from ..config import (
     PROMPT_OPTIMIZE_TEMPERATURE,
 )
 from ..errors import AppError
-from ..schemas import StoryOptimizationAnalysis
+from ..schemas import (
+    GeneratedCopyOption,
+    GeneratedCopyOptions,
+    StoryOptimizationAnalysis,
+)
 
 logger = logging.getLogger("comic_workbench")
 
@@ -41,18 +48,20 @@ OUTPUT_CONTRACT = """
 
 重要输出要求（必须严格遵守）：
 1. 只输出一个合法的 json 对象，不要输出 Markdown 代码块、解释或任何多余文字。
-2. json 对象必须包含且只包含以下两个字段：
-   {"title": "小红书图文标题，18 字以内，可带 1-2 个 emoji", "content": "小红书正文描述，300-600 字，分段清晰，可带 emoji 和 3-5 个话题标签"}
-3. title 与 content 都不能为空。
-4. title 是用户在信息流里第一眼看到的内容（与第 1 页封面图一起），必须让人想点开：用反差、悬念、利益点或强情绪，避免平铺直叙；正文是点进来后才看到的，不要把关键信息全塞进标题。
+2. json 对象必须包含且只包含 options 字段，options 是 3 个不同方案的数组，结构如下：
+   {"options": [
+     {"style": "方案名称，2-6 字，如「悬念反差」「情绪共鸣」「利益直给」",
+      "feature": "这个方案的特点，20-40 字，说明切入角度和它最容易打动哪类读者",
+      "title": "小红书图文标题，18 字以内，可带 1-2 个 emoji",
+      "content": "小红书正文描述，300-600 字，分段清晰，可带 emoji 和 3-5 个话题标签",
+      "recommended": false,
+      "recommend_reason": "推荐理由，30 字以内；只有推荐方案填写，其余方案留空字符串"}
+   ]}
+3. 3 个方案必须采用明显不同的切入角度：例如悬念反差（制造好奇）、情绪共鸣（放大委屈/愤怒/爽感）、利益直给或信息差（直接给结论/反转）；不要只换标题措辞，正文也要按各自角度重写。
+4. 每个方案都必须有非空的 style、feature、title、content；3 个方案中必须有且只有一个 recommended 为 true，并用 recommend_reason 说明为什么它最适合这条故事。
+5. title 是用户在信息流里第一眼看到的内容（与第 1 页封面图一起），必须让人想点开：用反差、悬念、利益点或强情绪，避免平铺直叙；正文是点进来后才看到的，不要把关键信息全塞进标题。
+6. 所有内容使用中文，不得编造故事里没有的关键事实。
 """
-
-
-class GeneratedCopy(BaseModel):
-    """模型输出经过 Pydantic 二次校验，避免超长或空字段入库。"""
-
-    title: str = Field(min_length=1, max_length=MAX_POST_CONFIG_TITLE_LENGTH)
-    content: str = Field(min_length=1, max_length=MAX_POST_CONTENT_LENGTH)
 
 
 def build_messages(
@@ -388,6 +397,25 @@ def stream_art_style_optimization(
     )
 
 
+def stream_character_optimization(
+    api_key: str,
+    character_name: str,
+    character_role: str,
+    current_appearance: str,
+    messages: list[dict[str, str]],
+) -> Iterator[str]:
+    """流式优化角色外形描述；姓名与身份仅作为上下文标签。"""
+    role_text = f"（{character_role}）" if character_role else ""
+    yield from _stream_optimization(
+        api_key,
+        current_appearance,
+        messages,
+        system_prompt=CHARACTER_OPTIMIZE_SYSTEM_PROMPT,
+        content_label=f"角色「{character_name}」{role_text}的当前外形描述",
+        max_tokens=CHARACTER_OPTIMIZE_MAX_TOKENS,
+    )
+
+
 def _load_json_object(text: str, label: str = "文案") -> dict:
     """容忍 Markdown 围栏和前后杂质，提取 JSON 对象。"""
     cleaned = text.strip()
@@ -415,7 +443,41 @@ def _load_json_object(text: str, label: str = "文案") -> dict:
     )
 
 
-def _parse_response(response: httpx.Response) -> GeneratedCopy:
+def _normalize_copy_options(
+    options: list[GeneratedCopyOption],
+) -> list[GeneratedCopyOption]:
+    """清洗方案文本，并保证前端始终能拿到「有且只有一个」推荐方案。
+
+    模型偶尔会漏标或标多个 recommended。这里不把它当成格式错误整次失败，
+    而是统一保留第一个方案为推荐，保住用户已经付费换来的 3 份文案。
+    """
+    for option in options:
+        option.style = option.style.strip()
+        option.feature = option.feature.strip()
+        option.title = option.title.strip()
+        option.content = option.content.strip()
+        option.recommend_reason = option.recommend_reason.strip()
+
+    if any(
+        not option.style
+        or not option.feature
+        or not option.title
+        or not option.content
+        for option in options
+    ):
+        raise AppError(
+            502, "DeepSeek 返回的文案内容为空，请重试", "DEEPSEEK_BAD_OUTPUT"
+        )
+
+    if sum(option.recommended for option in options) != 1:
+        for option in options:
+            option.recommended = False
+        options[0].recommended = True
+
+    return options
+
+
+def _parse_response(response: httpx.Response) -> list[GeneratedCopyOption]:
     """解析并校验模型输出；任何格式问题统一标记为 DEEPSEEK_BAD_OUTPUT。"""
     try:
         data = response.json()
@@ -444,19 +506,13 @@ def _parse_response(response: httpx.Response) -> GeneratedCopy:
 
     payload = _load_json_object(text)
     try:
-        copy = GeneratedCopy.model_validate(payload)
+        parsed = GeneratedCopyOptions.model_validate(payload)
     except ValidationError as exc:
         raise AppError(
             502, "DeepSeek 返回的文案格式不正确，请重试", "DEEPSEEK_BAD_OUTPUT"
         ) from exc
 
-    copy.title = copy.title.strip()
-    copy.content = copy.content.strip()
-    if not copy.title or not copy.content:
-        raise AppError(
-            502, "DeepSeek 返回的文案内容为空，请重试", "DEEPSEEK_BAD_OUTPUT"
-        )
-    return copy
+    return _normalize_copy_options(parsed.options)
 
 
 def generate_copy(
@@ -466,8 +522,8 @@ def generate_copy(
     story_content: str,
     art_style: str | None = None,
     art_style_name: str | None = None,
-) -> GeneratedCopy:
-    """生成小红书标题与正文。
+) -> list[GeneratedCopyOption]:
+    """一次生成多份小红书文案方案，供用户挑选后再填入表单。
 
     仅对「输出格式异常」重试一次；鉴权、限流、网络、超时等错误直接抛出，
     由前端提示用户手动重试。
@@ -570,6 +626,121 @@ def analyze_optimization_changes(
         except AppError as exc:
             if exc.code == "DEEPSEEK_BAD_OUTPUT" and attempt == 0:
                 logger.warning("DeepSeek 解读输出解析失败，重试一次：%s", exc.message)
+                last_error = exc
+                continue
+            raise
+
+    raise last_error or AppError(
+        502, "DeepSeek 返回内容异常，请重试", "DEEPSEEK_BAD_OUTPUT"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 角色卡同步：按新外形重写分镜「人物回顾」
+# ---------------------------------------------------------------------------
+
+
+class _ReviewSyncItem(BaseModel):
+    """单页的人物回顾重写结果。"""
+
+    page_number: int = Field(ge=1)
+    character_review: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+
+
+class _ReviewSyncOutput(BaseModel):
+    reviews: list[_ReviewSyncItem]
+
+
+def _parse_review_sync_response(
+    response: httpx.Response, expected_pages: set[int]
+) -> dict[int, str]:
+    """解析人物回顾重写结果；格式问题统一标记为 DEEPSEEK_BAD_OUTPUT。"""
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise AppError(
+            502, "DeepSeek 返回了无法解析的响应，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+
+    try:
+        choice = data["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        text = choice["message"]["content"]
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        raise AppError(
+            502, "DeepSeek 返回内容为空，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+
+    if finish_reason == "length":
+        raise AppError(502, "人物回顾同步内容被截断，请重试", "DEEPSEEK_BAD_OUTPUT")
+    if not isinstance(text, str) or not text.strip():
+        raise AppError(502, "DeepSeek 返回内容为空，请重试", "DEEPSEEK_BAD_OUTPUT")
+
+    payload = _load_json_object(text, label="人物回顾")
+    try:
+        output = _ReviewSyncOutput.model_validate(payload)
+    except ValidationError as exc:
+        raise AppError(
+            502, "DeepSeek 返回的人物回顾格式不正确，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+
+    reviews = {item.page_number: item.character_review for item in output.reviews}
+    # 页码必须与请求一一对应，防止模型漏页或编造页码把脏数据写进分镜
+    if set(reviews) != expected_pages:
+        raise AppError(
+            502, "DeepSeek 返回的人物回顾页码不完整，请重试", "DEEPSEEK_BAD_OUTPUT"
+        )
+    return reviews
+
+
+def sync_character_reviews(
+    api_key: str,
+    characters: list[dict],
+    pages: list[dict],
+) -> dict[int, str]:
+    """按新版角色卡重写受影响分镜页的「人物回顾」，返回 {页码: 新回顾}。
+
+    characters 为全部角色卡的最新外形（dict 含 name / appearance）；
+    pages 为受影响分镜页的精简信息（dict 含 page_number / characters /
+    character_review）。与文案生成一致：仅对「输出格式异常」重试一次。
+    """
+    cards_text = "\n\n".join(
+        f"{{{{{card['name']}}}}}：{card['appearance']}" for card in characters
+    )
+    pages_text = "\n\n".join(
+        f"第 {page['page_number']} 页\n"
+        f"登场角色：{'、'.join(page['characters'])}\n"
+        f"当前人物回顾：{page['character_review']}"
+        for page in pages
+    )
+    messages = [
+        {"role": "system", "content": CHARACTER_REVIEW_SYNC_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "<character_cards>\n"
+                f"{cards_text}\n"
+                "</character_cards>\n\n"
+                "<pages>\n"
+                f"{pages_text}\n"
+                "</pages>"
+            ),
+        },
+    ]
+    expected_pages = {page["page_number"] for page in pages}
+    last_error: AppError | None = None
+
+    for attempt in range(2):
+        try:
+            response = _send_request(
+                api_key, messages, max_tokens=CHARACTER_REVIEW_SYNC_MAX_TOKENS
+            )
+            return _parse_review_sync_response(response, expected_pages)
+        except AppError as exc:
+            if exc.code == "DEEPSEEK_BAD_OUTPUT" and attempt == 0:
+                logger.warning(
+                    "DeepSeek 人物回顾输出解析失败，重试一次：%s", exc.message
+                )
                 last_error = exc
                 continue
             raise

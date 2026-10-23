@@ -11,7 +11,12 @@ from ..database import get_db
 from ..errors import AppError
 from ..models import Post, Story
 from ..schemas import StoryCreate, StoryRead, StoryUpdate
-from ..services.files import delete_cover_file, validate_cover_filename
+from ..services.files import (
+    delete_cover_file,
+    delete_group_photo,
+    delete_story_page_images,
+    validate_cover_filename,
+)
 
 router = APIRouter(prefix="/api/stories", tags=["故事"])
 
@@ -153,4 +158,7 @@ def delete_story(
     db.delete(story)
     db.commit()
     delete_cover_file(cover_filename, request.app.state.app_settings.upload_dir)
+    # 分镜成品图目录与人物合照随故事一起清理
+    delete_story_page_images(request.app.state.app_settings.upload_dir, story_id)
+    delete_group_photo(request.app.state.app_settings.upload_dir, story_id)
     return Response(status_code=204)

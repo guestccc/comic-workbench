@@ -54,16 +54,10 @@ body {
   border-bottom: 1px solid #f0f0f0;
 }
 
+/* 所有页面内容铺满可用宽度，不限制最大宽度 */
 .app-content {
   width: 100%;
-  max-width: 1240px;
-  margin: 0 auto;
   padding: 24px;
-}
-
-/* 详情页：取消最大宽度，内容铺满可用区域 */
-.app-content-wide {
-  max-width: none;
 }
 
 .page-header {
@@ -396,6 +390,77 @@ body {
   margin-top: 2px;
 }
 
+/* 分镜成品图缩略图 */
+.page-image-thumb {
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #fafafa;
+}
+
+/* 统一图片上传组件 */
+.image-upload {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.image-upload-hint {
+  color: #bfbfbf;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.image-upload-card-trigger {
+  cursor: pointer;
+}
+
+.image-upload-card-trigger:hover {
+  color: #ff2442;
+  background: #fff1f2;
+}
+
+/* 弹窗内粘贴区：聚焦（边框变红）后才能接收 Ctrl+V 粘贴 */
+.image-upload-paste-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 28px 16px;
+  border: 1px dashed #d9d9d9;
+  border-radius: 8px;
+  background: #fafafa;
+  cursor: pointer;
+  outline: none;
+  transition:
+    border-color 0.2s,
+    background 0.2s;
+}
+
+.image-upload-paste-zone:hover {
+  border-color: #ff2442;
+}
+
+.image-upload-paste-zone:focus {
+  border-color: #ff2442;
+  background: #fff1f2;
+}
+
+.image-upload-paste-icon {
+  font-size: 22px;
+  color: #bfbfbf;
+}
+
+.image-upload-paste-zone:focus .image-upload-paste-icon {
+  color: #ff2442;
+}
+
+.image-upload-paste-text {
+  color: #595959;
+  font-size: 13px;
+}
+
 /* 生图提示词：按分类分块展示，便于看懂每段在控制什么 */
 .prompt-sections {
   display: flex;
@@ -445,6 +510,84 @@ body {
   min-height: 96px;
 }
 
+/* 同步角色卡弹窗的解析预览列表 */
+.sync-preview-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.sync-preview-item {
+  padding: 10px 12px;
+  background: #fafafa;
+  border-radius: 8px;
+}
+
+.sync-preview-item .content-preview {
+  margin-top: 4px;
+  margin-bottom: 0;
+  font-size: 12px;
+  color: #595959;
+}
+
 .group-photo-card {
   margin-top: 16px;
+}
+
+/* AI 文案方案选择：推荐方案用浅金底突出，正文可换行 */
+.copy-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.copy-option-card {
+  padding: 14px 16px;
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.copy-option-card.is-recommended {
+  border-color: #ffd666;
+  background: #fffbe6;
+}
+
+/* 多选模式下已勾选的方案用蓝色描边 */
+.copy-option-card.is-selected {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 1px #1677ff33;
+}
+
+.copy-option-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.copy-option-feature,
+.copy-option-reason {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.copy-option-reason {
+  color: #ad6800;
+}
+
+.copy-option-title {
+  margin: 10px 0 6px !important;
+  font-size: 15px !important;
+}
+
+.copy-option-content {
+  margin-bottom: 0 !important;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #595959;
 }

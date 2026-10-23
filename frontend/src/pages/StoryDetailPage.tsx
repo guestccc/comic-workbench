@@ -231,6 +231,7 @@ export default function StoryDetailPage() {
               children: (
                 <CharacterCardsTab
                   breakdown={breakdown}
+                  aiEnabled={settings?.deepseek.configured ?? false}
                   onRefresh={refreshBreakdown}
                 />
               ),

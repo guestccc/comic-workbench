@@ -10,15 +10,22 @@ import {
   Modal,
   Space,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
-import { CopyOutlined, EditOutlined } from '@ant-design/icons'
+import { CopyOutlined, EditOutlined, RobotOutlined, SyncOutlined } from '@ant-design/icons'
 import { api, getErrorMessage } from '../api/client'
+import CharacterSyncModal from './CharacterSyncModal'
+import ImageUpload from './ImageUpload'
+import PromptOptimizerDrawer from './PromptOptimizerDrawer'
 import type { CharacterCard, StoryBreakdown } from '../types'
+import { CHARACTER_SYNC_INSTRUCTION } from '../utils/characterSync'
 import { copyText } from '../utils/clipboard'
 
 interface CharacterCardsTabProps {
   breakdown: StoryBreakdown | null
+  /** 是否已配置 DeepSeek Key，决定「AI 优化」是否可用 */
+  aiEnabled: boolean
   onRefresh: () => Promise<void>
 }
 
@@ -48,15 +55,23 @@ function characterBinding(card: CharacterCard): string {
  */
 export default function CharacterCardsTab({
   breakdown,
+  aiEnabled,
   onRefresh,
 }: CharacterCardsTabProps) {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const [form] = Form.useForm<CardFormValues>()
 
   const [cardOpen, setCardOpen] = useState(false)
   // -1 表示新增；否则为要替换的卡片下标
   const [editingIndex, setEditingIndex] = useState(-1)
   const [cardSaving, setCardSaving] = useState(false)
+
+  // AI 优化抽屉当前针对的角色卡下标；-1 表示关闭
+  const [optimizerIndex, setOptimizerIndex] = useState(-1)
+  // 同步角色卡弹窗
+  const [syncOpen, setSyncOpen] = useState(false)
+  // 替换合照后 URL 不变，用版本号参数强制浏览器重新加载
+  const [photoVersion, setPhotoVersion] = useState(0)
 
   const openCard = (index: number) => {
     setEditingIndex(index)
@@ -115,6 +130,24 @@ export default function CharacterCardsTab({
     }
   }
 
+  /**
+   * 应用 AI 优化后的外形描述：替换对应下标的 appearance 并整体写回。
+   * 与手动编辑一致，应用即保存，无需二次确认。
+   */
+  const applyOptimizedAppearance = async (value: string) => {
+    if (!breakdown || optimizerIndex < 0) return
+    const index = optimizerIndex
+    const characters = breakdown.characters.map((card, cardIndex) =>
+      cardIndex === index ? { ...card, appearance: value.trim() } : card,
+    )
+    try {
+      await api.patchBreakdown(breakdown.story_id, { characters })
+      await onRefresh()
+    } catch (error) {
+      message.error(getErrorMessage(error))
+    }
+  }
+
   /** 一次性复制全部变量绑定，便于粘贴到外部生图 AI。 */
   const handleCopyAll = async () => {
     if (!breakdown || breakdown.characters.length === 0) {
@@ -129,6 +162,59 @@ export default function CharacterCardsTab({
     } catch {
       message.error('复制失败，请手动选中后复制')
     }
+  }
+
+  /** 复制发给生图平台的角色卡更新指令，省去每次手写。 */
+  const handleCopySyncInstruction = async () => {
+    try {
+      await copyText(CHARACTER_SYNC_INSTRUCTION)
+      message.success('更新指令已复制，直接发给生图平台即可')
+    } catch {
+      message.error('复制失败，请手动选中后复制')
+    }
+  }
+
+  /** 上传 / 替换最终确认的人物合照；文件只保存在本地 uploads 目录。 */
+  const handleUploadGroupPhoto = async (file: File) => {
+    if (!breakdown) return
+    try {
+      await api.uploadGroupPhoto(breakdown.story_id, file)
+      setPhotoVersion(Date.now())
+      message.success('人物合照已上传')
+      await onRefresh()
+    } catch (error) {
+      message.error(getErrorMessage(error))
+      // 抛出后由 ImageUpload 复位上传中状态
+      throw error
+    }
+  }
+
+  /** 删除人物合照。 */
+  const handleDeleteGroupPhoto = () => {
+    if (!breakdown) return
+    modal.confirm({
+      title: '删除人物合照？',
+      content: '图片文件会从本地删除，不影响角色卡与分镜。',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await api.deleteGroupPhoto(breakdown.story_id)
+          message.success('人物合照已删除')
+          await onRefresh()
+        } catch (error) {
+          message.error(getErrorMessage(error))
+        }
+      },
+    })
+  }
+
+  /** 合照地址：替换后拼上版本号参数，避免浏览器缓存旧图。 */
+  const groupPhotoSrc = (): string | null => {
+    const url = breakdown?.group_photo_url
+    if (!url) return null
+    return photoVersion ? `${url}?v=${photoVersion}` : url
   }
 
   if (!breakdown) {
@@ -172,6 +258,22 @@ export default function CharacterCardsTab({
           >
             复制全部变量
           </Button>
+          <Tooltip title="在生图平台确认形象后，把这条指令发给平台，让它输出新版完整角色卡">
+            <Button
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => void handleCopySyncInstruction()}
+            >
+              复制更新指令
+            </Button>
+          </Tooltip>
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            onClick={() => setSyncOpen(true)}
+          >
+            同步角色卡
+          </Button>
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -213,6 +315,23 @@ export default function CharacterCardsTab({
                   >
                     复制变量
                   </Button>
+                  <Tooltip
+                    title={
+                      aiEnabled
+                        ? undefined
+                        : '请先在「设置」页配置 DeepSeek API Key'
+                    }
+                  >
+                    <Button
+                      type="link"
+                      size="small"
+                      icon={<RobotOutlined />}
+                      disabled={!aiEnabled}
+                      onClick={() => setOptimizerIndex(index)}
+                    >
+                      AI 优化
+                    </Button>
+                  </Tooltip>
                   <Button
                     type="link"
                     size="small"
@@ -230,6 +349,27 @@ export default function CharacterCardsTab({
           ))}
         </div>
       )}
+
+      {/* 最终确认的人物合照：在生图平台确认形象后上传存档，仅保存在本地 */}
+      <Card
+        size="small"
+        className="group-photo-card"
+        title="人物合照"
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            在生图平台确认全部角色形象后，把最终合照上传到这里存档核对
+          </Typography.Text>
+        }
+      >
+        <ImageUpload
+          imageUrl={groupPhotoSrc()}
+          onUpload={handleUploadGroupPhoto}
+          onRemove={handleDeleteGroupPhoto}
+          maxSizeBytes={15 * 1024 * 1024}
+          uploadText="上传人物合照"
+          replaceText="替换合照"
+        />
+      </Card>
 
       <Modal
         title={editingIndex >= 0 ? '编辑角色卡' : '新增角色卡'}
@@ -264,6 +404,29 @@ export default function CharacterCardsTab({
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* AI 优化抽屉：同步用户在生图平台对角色形象的调整 */}
+      {optimizerIndex >= 0 && breakdown.characters[optimizerIndex] && (
+        <PromptOptimizerDrawer
+          open
+          mode="character"
+          storyId={breakdown.story_id}
+          characterName={breakdown.characters[optimizerIndex].name}
+          characterRole={breakdown.characters[optimizerIndex].role}
+          currentPrompt={breakdown.characters[optimizerIndex].appearance}
+          onClose={() => setOptimizerIndex(-1)}
+          onApply={(value) => void applyOptimizedAppearance(value)}
+        />
+      )}
+
+      {/* 同步生图平台返回的新版角色卡，并联动更新分镜人物回顾 */}
+      <CharacterSyncModal
+        storyId={breakdown.story_id}
+        existingNames={breakdown.characters.map((card) => card.name)}
+        open={syncOpen}
+        onClose={() => setSyncOpen(false)}
+        onSynced={onRefresh}
+      />
     </div>
   )
 }
