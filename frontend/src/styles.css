@@ -61,6 +61,11 @@ body {
   padding: 24px;
 }
 
+/* 详情页：取消最大宽度，内容铺满可用区域 */
+.app-content-wide {
+  max-width: none;
+}
+
 .page-header {
   display: flex;
   align-items: flex-start;
@@ -200,10 +205,246 @@ body {
   border-top: 1px solid #f0f0f0;
 }
 
+/* AI 优化回复：普通对话文字 + 可复制的提示词代码块 */
+.optimizer-response {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.optimizer-chat-text {
+  margin: 0 !important;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.optimizer-code-block {
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fafafa;
+}
+
+.optimizer-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px 0 12px;
+  background: #f0f0f0;
+  color: #595959;
+  font-size: 12px;
+  line-height: 28px;
+}
+
+.optimizer-code-text {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  color: #262626;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* AI 优化结果的原版 / 新版对比 */
 .compare-body {
   max-height: 58vh;
   overflow: auto;
   border: 1px solid #f0f0f0;
   border-radius: 8px;
+}
+
+/* 原文 / 优化文：AI 改动解读 */
+.analysis-body {
+  max-height: 58vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.analysis-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 180px;
+}
+
+.change-card {
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fff;
+}
+
+/* 原句标浅红、优化句标浅绿，与 diff 的增删语义一致 */
+.change-quote {
+  margin: 10px 0 0 !important;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fff1f0;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.change-quote-new {
+  background: #f6ffed;
+}
+
+/* 故事详情页 */
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.story-tab-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/* 分镜页折叠面板：默认折叠，标题栏展示本页故事内容摘要 */
+.storyboard-pages .ant-collapse-item {
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  background: #fff;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.storyboard-pages .ant-collapse-item:last-child {
+  margin-bottom: 0;
+}
+
+/* 折叠内容区留出内边距 */
+.storyboard-pages .ant-collapse-content-box {
+  padding: 0 16px 16px;
+}
+
+/* 标题栏允许收缩，摘要才能正确显示省略号 */
+.storyboard-pages .ant-collapse-header-text {
+  min-width: 0;
+}
+
+.storyboard-page-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.storyboard-page-title,
+.storyboard-page-label .ant-tag {
+  flex: 0 0 auto;
+}
+
+/* 本页故事内容：单行省略，悬停可通过 title 查看全文 */
+.storyboard-page-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 分镜详情：纯文案排版，标签在上、内容在下，不使用表格线 */
+.storyboard-script {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #f0f0f0;
+}
+
+.script-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.script-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.script-text {
+  margin: 0;
+  color: #262626;
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 多句对话之间保持紧凑，避免读起来像两个段落 */
+.script-dialogue + .script-dialogue {
+  margin-top: 2px;
+}
+
+/* 生图提示词：按分类分块展示，便于看懂每段在控制什么 */
+.prompt-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fafafa;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.prompt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.prompt-section + .prompt-section {
+  border-top: 1px dashed #ececec;
+  padding-top: 8px;
+}
+
+.prompt-section-label {
+  color: #8c8c8c;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.prompt-section-text {
+  margin: 0;
+  color: #262626;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 角色设定卡网格 */
+.character-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.character-card .ant-card-body {
+  min-height: 96px;
+}
+
+.group-photo-card {
+  margin-top: 16px;
 }

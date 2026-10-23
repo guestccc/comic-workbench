@@ -47,6 +47,9 @@ def test_stream_success(client, configure_key, mock_deepseek_stream):
     # 使用画风专用的系统提示词，并携带当前描述
     assert "画风描述" in system_prompt
     assert "日系赛璐璐风格，线条干净，平涂上色。" in system_prompt
+    # 画风优化同样要求只输出代码块，避免回复里混入寒暄
+    assert "Markdown 代码块" in system_prompt
+    assert "不要复述用户诉求" in system_prompt
     assert payload["messages"][-1] == {
         "role": "user",
         "content": "补充光影和氛围",

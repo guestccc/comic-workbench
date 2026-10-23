@@ -19,7 +19,28 @@ from .config import (
     MAX_API_KEY_LENGTH,
     MAX_ART_STYLES,
     MAX_ART_STYLE_CONTENT_LENGTH,
+    MAX_ART_STYLE_ID_LENGTH,
     MAX_ART_STYLE_NAME_LENGTH,
+    MAX_BREAKDOWN_CONTENT_LENGTH,
+    MAX_BREAKDOWN_PAGES,
+    MAX_CHARACTER_APPEARANCE_LENGTH,
+    MAX_CHARACTER_CARDS,
+    MAX_CHARACTER_GROUP_PROMPT_LENGTH,
+    MAX_CHARACTER_NAME_LENGTH,
+    MAX_CHARACTER_ROLE_LENGTH,
+    MAX_PAGE_CHARACTERS,
+    MAX_PAGE_DIALOGUES,
+    MAX_PAGE_DIALOGUE_LENGTH,
+    MAX_PAGE_HIGHLIGHT_LENGTH,
+    MAX_PAGE_IMAGE_PROMPT_LENGTH,
+    MAX_PAGE_ROLE_LENGTH,
+    MAX_PAGE_SHORT_TEXT_LENGTH,
+    MAX_OPTIMIZE_ANALYZE_CHANGES,
+    MAX_OPTIMIZE_ANALYZE_QUOTE_LENGTH,
+    MAX_OPTIMIZE_ANALYZE_REASON_LENGTH,
+    MAX_OPTIMIZE_ANALYZE_SUMMARY_LENGTH,
+    MAX_PAGE_TEXT_LENGTH,
+    MAX_POST_CONFIG_TITLE_LENGTH,
     MAX_POST_CONTENT_LENGTH,
     MAX_POST_TITLE_LENGTH,
     MAX_PROMPT_LENGTH,
@@ -68,7 +89,7 @@ class ArtStyleItem(BaseModel):
     name 替换 {art_style_name}，content 替换 {art_style}。
     """
 
-    id: str = Field(min_length=1, max_length=64)
+    id: str = Field(min_length=1, max_length=MAX_ART_STYLE_ID_LENGTH)
     name: str = Field(min_length=1, max_length=MAX_ART_STYLE_NAME_LENGTH)
     content: str = Field(min_length=1, max_length=MAX_ART_STYLE_CONTENT_LENGTH)
 
@@ -233,13 +254,34 @@ class ArtStyleOptimizeRequest(BaseModel):
 
 
 class StoryCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=MAX_STORY_NAME_LENGTH)
+    """新建故事；名称可留空，拆解后再补填。"""
+
+    name: str = Field(default="", max_length=MAX_STORY_NAME_LENGTH)
     content: str = Field(min_length=1, max_length=MAX_STORY_CONTENT_LENGTH)
     cover_filename: str | None = Field(default=None, max_length=64)
+    # 该故事拆解时使用的画风 id；为空表示尚未选择
+    art_style_id: str | None = Field(
+        default=None, max_length=MAX_ART_STYLE_ID_LENGTH
+    )
 
-    @field_validator("name", "content")
+    @field_validator("name")
     @classmethod
-    def _strip_required(cls, value: str) -> str:
+    def _strip_optional_name(cls, value: str) -> str:
+        # 名称允许为空字符串，统一去掉首尾空白
+        return value.strip()
+
+    @field_validator("art_style_id")
+    @classmethod
+    def _strip_optional_art_style(cls, value: str | None) -> str | None:
+        # 空字符串与纯空白视为未选择画风
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("content")
+    @classmethod
+    def _strip_required_content(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("不能为空")
@@ -258,11 +300,256 @@ class StoryRead(_TimestampMixin):
     content: str
     cover_filename: str | None = None
     cover_url: str | None = None
+    art_style_id: str | None = None
+    # 从画风列表中解析出的名称与描述；画风不存在（已删除）时为 None
+    art_style_name: str | None = None
+    art_style_content: str | None = None
 
 
 class UploadRead(BaseModel):
     filename: str
     url: str
+
+
+# ---------------------------------------------------------------------------
+# 故事拆解 / 分镜
+# ---------------------------------------------------------------------------
+
+StoryboardShotType = Literal["全景", "中景", "特写"]
+
+
+class CharacterCard(BaseModel):
+    """角色设定卡：一段外形描述覆盖发型、长相、年龄感、服装、配饰与体态。"""
+
+    name: str = Field(min_length=1, max_length=MAX_CHARACTER_NAME_LENGTH)
+    role: str = Field(default="", max_length=MAX_CHARACTER_ROLE_LENGTH)
+    appearance: str = Field(
+        min_length=1, max_length=MAX_CHARACTER_APPEARANCE_LENGTH
+    )
+
+    @field_validator("name", "appearance")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def _strip_optional(cls, value: str) -> str:
+        return value.strip()
+
+
+class StoryboardPagePayload(BaseModel):
+    """单页分镜的写入内容；页码由 URL 提供，不放在请求体里。"""
+
+    is_flashback: bool = False
+    # 本页在故事中的作用，例如「钩子封面」「铺垫」「冲突」「反转」「爆点」「情绪高潮」「收尾」
+    page_role: str = Field(default="", max_length=MAX_PAGE_ROLE_LENGTH)
+    story_content: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    characters: list[str] = Field(
+        default_factory=list, max_length=MAX_PAGE_CHARACTERS
+    )
+    character_review: str = Field(
+        min_length=1, max_length=MAX_PAGE_TEXT_LENGTH
+    )
+    scene: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    action_state: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    change_note: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    narration_main: str = Field(
+        min_length=1, max_length=MAX_PAGE_SHORT_TEXT_LENGTH
+    )
+    narration_highlight: str = Field(
+        default="", max_length=MAX_PAGE_HIGHLIGHT_LENGTH
+    )
+    narration_sub: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    dialogues: list[str] = Field(
+        default_factory=list, max_length=MAX_PAGE_DIALOGUES
+    )
+    shot_type: StoryboardShotType
+    image_prompt: str = Field(
+        min_length=1, max_length=MAX_PAGE_IMAGE_PROMPT_LENGTH
+    )
+
+    @field_validator(
+        "story_content",
+        "character_review",
+        "scene",
+        "action_state",
+        "change_note",
+        "narration_main",
+        "narration_sub",
+        "image_prompt",
+    )
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator("narration_highlight", "page_role")
+    @classmethod
+    def _strip_optional_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("characters")
+    @classmethod
+    def _validate_characters(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            value = value.strip()
+            if not value:
+                raise ValueError("出场人物不能为空")
+            if len(value) > MAX_CHARACTER_NAME_LENGTH:
+                raise ValueError(
+                    f"角色名不能超过 {MAX_CHARACTER_NAME_LENGTH} 字"
+                )
+            cleaned.append(value)
+        return cleaned
+
+    @field_validator("dialogues")
+    @classmethod
+    def _validate_dialogues(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            value = value.strip()
+            if not value:
+                raise ValueError("台词不能为空")
+            if len(value) > MAX_PAGE_DIALOGUE_LENGTH:
+                raise ValueError(
+                    f"单句台词不能超过 {MAX_PAGE_DIALOGUE_LENGTH} 字"
+                )
+            cleaned.append(value)
+        return cleaned
+
+
+class StoryboardPageRead(StoryboardPagePayload):
+    page_number: int = Field(ge=1, le=MAX_BREAKDOWN_PAGES)
+
+
+class StoryBreakdownUpdate(BaseModel):
+    """拆解头部信息的局部更新；未提供的字段保持不变。"""
+
+    optimized_content: str | None = Field(
+        default=None, max_length=MAX_BREAKDOWN_CONTENT_LENGTH
+    )
+    characters: list[CharacterCard] | None = Field(
+        default=None, max_length=MAX_CHARACTER_CARDS
+    )
+    # 旧流程字段，保留兼容；新流程不再写入人物合影提示词
+    group_photo_prompt: str | None = Field(
+        default=None, max_length=MAX_CHARACTER_GROUP_PROMPT_LENGTH
+    )
+
+    @field_validator("optimized_content")
+    @classmethod
+    def _strip_optimized(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("优化后文章不能为空")
+        return value
+
+    @field_validator("group_photo_prompt")
+    @classmethod
+    def _strip_group_prompt(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _require_any_field(self) -> "StoryBreakdownUpdate":
+        if (
+            self.optimized_content is None
+            and self.characters is None
+            and self.group_photo_prompt is None
+        ):
+            raise ValueError("没有需要更新的内容")
+        return self
+
+
+class OptimizationChangeNote(BaseModel):
+    """AI 对单处改动的解读：类型、原文、优化后与原因。"""
+
+    kind: str = Field(min_length=1, max_length=20)
+    original: str = Field(default="", max_length=MAX_OPTIMIZE_ANALYZE_QUOTE_LENGTH)
+    optimized: str = Field(default="", max_length=MAX_OPTIMIZE_ANALYZE_QUOTE_LENGTH)
+    why: str = Field(min_length=1, max_length=MAX_OPTIMIZE_ANALYZE_REASON_LENGTH)
+
+    @field_validator("kind", "original", "optimized", "why")
+    @classmethod
+    def _strip_fields(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _require_reason(self) -> "OptimizationChangeNote":
+        if not self.why:
+            raise ValueError("改动原因不能为空")
+        return self
+
+
+class StoryOptimizationAnalysis(BaseModel):
+    """原文与优化文的 AI 解读结果。"""
+
+    summary: str = Field(min_length=1, max_length=MAX_OPTIMIZE_ANALYZE_SUMMARY_LENGTH)
+    changes: list[OptimizationChangeNote] = Field(
+        default_factory=list, max_length=MAX_OPTIMIZE_ANALYZE_CHANGES
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def _strip_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("总结不能为空")
+        return value
+
+
+class StoryBreakdownRead(_TimestampMixin):
+    id: int
+    story_id: int
+    optimized_content: str
+    characters: list[CharacterCard]
+    group_photo_prompt: str
+    pages: list[StoryboardPageRead]
+    # 生成时使用的画风快照；画风被删除时仍保留旧值
+    art_style_id: str | None = None
+    art_style_name: str | None = None
+    art_style_content: str | None = None
+    # 由后端对比当前故事计算：原文已更新 / 画风已变更
+    is_content_stale: bool = False
+    is_art_style_stale: bool = False
+
+
+# ---------------------------------------------------------------------------
+# 每条故事一份的小红书发文配置
+# ---------------------------------------------------------------------------
+
+
+class StoryPostConfigUpdate(BaseModel):
+    """全量保存发文配置；标题与正文都允许为空。
+
+    标题限制 18 字：小红书信息流第一眼只能看到标题与第 1 页封面，
+    过长会被折叠，也容易分散注意力。
+    """
+
+    title: str = Field(default="", max_length=MAX_POST_CONFIG_TITLE_LENGTH)
+    content: str = Field(default="", max_length=MAX_POST_CONTENT_LENGTH)
+
+    @field_validator("title", "content")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+
+class StoryPostConfigRead(_TimestampMixin):
+    id: int
+    story_id: int
+    title: str
+    content: str
 
 
 # ---------------------------------------------------------------------------

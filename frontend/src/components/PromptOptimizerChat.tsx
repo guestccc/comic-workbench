@@ -7,8 +7,9 @@ import {
 } from '@ant-design/icons'
 import type { BubbleItemType, BubbleListProps } from '@ant-design/x'
 import { Bubble, Prompts, Welcome } from '@ant-design/x'
-import { OPTIMIZER_COPY } from '../utils/promptOptimizer'
+import { extractPrompt, OPTIMIZER_COPY } from '../utils/promptOptimizer'
 import type { ChatMessage, OptimizerMode } from '../utils/promptOptimizer'
+import PromptResponseContent from './PromptResponseContent'
 
 interface PromptOptimizerChatProps {
   mode: OptimizerMode
@@ -73,15 +74,28 @@ export default function PromptOptimizerChat({
   }
 
   const bubbleItems: BubbleItemType[] = messages.map((item) => {
+    // AI 可能先寒暄再给代码块；对比 / 复制只针对代码块里的提示词正文
+    const promptText =
+      item.role === 'ai' ? extractPrompt(item.content) : item.content
     const canApply =
       item.role === 'ai' &&
       item.status === 'success' &&
-      item.content.trim().length > 0
+      promptText.length > 0
 
     return {
       key: item.key,
       role: item.role,
-      content: item.content,
+      content:
+        item.role === 'ai' ? (
+          <PromptResponseContent
+            content={item.content}
+            status={item.status}
+            codeLabel={copy.codeBlockLabel}
+            onCopy={onCopy}
+          />
+        ) : (
+          item.content
+        ),
       status: item.status,
       loading:
         item.role === 'ai' && item.status === 'updating' && !item.content,
@@ -91,7 +105,7 @@ export default function PromptOptimizerChat({
             type="link"
             size="small"
             icon={<DiffOutlined />}
-            onClick={() => onCompare(item.content)}
+            onClick={() => onCompare(promptText)}
           >
             对比
           </Button>
@@ -99,7 +113,7 @@ export default function PromptOptimizerChat({
             type="link"
             size="small"
             icon={<CopyOutlined />}
-            onClick={() => onCopy(item.content)}
+            onClick={() => onCopy(promptText)}
           >
             复制
           </Button>

@@ -7,6 +7,13 @@ import type {
   PromptOptimizePayload,
   SettingsData,
   Story,
+  StoryboardPage,
+  StoryboardPagePayload,
+  StoryBreakdown,
+  StoryBreakdownPatch,
+  StoryOptimizationAnalysis,
+  StoryPostConfig,
+  StoryPostConfigPayload,
   UploadResult,
 } from '../types'
 
@@ -36,6 +43,7 @@ interface StoryPayload {
   name: string
   content: string
   cover_filename: string | null
+  art_style_id: string | null
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -104,8 +112,59 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
+  getStory: (id: number) => request<Story>(`/api/stories/${id}`),
   deleteStory: (id: number) =>
     request<void>(`/api/stories/${id}`, { method: 'DELETE' }),
+
+  // 故事拆解结果（由 Claude Code 技能写回，页面可编辑）
+  getBreakdown: (storyId: number) =>
+    request<StoryBreakdown | null>(`/api/stories/${storyId}/breakdown`),
+  patchBreakdown: (storyId: number, payload: StoryBreakdownPatch) =>
+    request<StoryBreakdown>(`/api/stories/${storyId}/breakdown`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * AI 解读原文到优化文的改动（需要已配置 DeepSeek Key）。
+   * 原文与优化文未变时服务端直接返回缓存；force=true 强制重新生成。
+   */
+  analyzeBreakdown: (storyId: number, force = false) =>
+    request<StoryOptimizationAnalysis>(
+      `/api/stories/${storyId}/breakdown/analyze${
+        force ? '?force=true' : ''
+      }`,
+      { method: 'POST' },
+    ),
+  putStoryboardPage: (
+    storyId: number,
+    pageNumber: number,
+    payload: StoryboardPagePayload,
+  ) =>
+    request<StoryboardPage>(
+      `/api/stories/${storyId}/breakdown/pages/${pageNumber}`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+    ),
+  deleteStoryboardPage: (storyId: number, pageNumber: number) =>
+    request<void>(`/api/stories/${storyId}/breakdown/pages/${pageNumber}`, {
+      method: 'DELETE',
+    }),
+  clearStoryboardPages: (storyId: number) =>
+    request<void>(`/api/stories/${storyId}/breakdown/pages`, {
+      method: 'DELETE',
+    }),
+  deleteBreakdown: (storyId: number) =>
+    request<void>(`/api/stories/${storyId}/breakdown`, { method: 'DELETE' }),
+
+  // 每个故事一份的小红书发文配置
+  getPostConfig: (storyId: number) =>
+    request<StoryPostConfig | null>(
+      `/api/stories/${storyId}/post-config`,
+    ),
+  savePostConfig: (storyId: number, payload: StoryPostConfigPayload) =>
+    request<StoryPostConfig>(`/api/stories/${storyId}/post-config`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
 
   // 上传
   uploadCover: (file: File) => {

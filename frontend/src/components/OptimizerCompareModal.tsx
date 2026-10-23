@@ -24,6 +24,14 @@ const DIFF_STYLES: ReactDiffViewerStylesOverride = {
     lineHeight: 1.6,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
+    // 标题栏里的 <pre> 默认带 1em 边距，会把标题顶出固定高度的标题块
+    margin: 0,
+  },
+  // 标题块默认固定 2.4em 高并裁切溢出内容，行高稍大就会把标题切掉一半
+  titleBlock: {
+    height: 'auto',
+    minHeight: '2.4em',
+    overflow: 'visible',
   },
 }
 

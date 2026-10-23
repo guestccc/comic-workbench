@@ -9,9 +9,14 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .config import AppSettings
-from .database import Base, create_db_engine, create_session_factory
+from .database import (
+    Base,
+    apply_schema_migrations,
+    create_db_engine,
+    create_session_factory,
+)
 from .errors import register_exception_handlers
-from .routers import posts, settings, stories, uploads
+from .routers import breakdowns, post_configs, posts, settings, stories, uploads
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +39,7 @@ def create_app(app_settings: AppSettings | None = None) -> FastAPI:
         app_settings.db_path.parent.mkdir(parents=True, exist_ok=True)
         app_settings.upload_dir.mkdir(parents=True, exist_ok=True)
         Base.metadata.create_all(bind=engine)
+        apply_schema_migrations(engine)
         yield
         engine.dispose()
 
@@ -63,6 +69,8 @@ def create_app(app_settings: AppSettings | None = None) -> FastAPI:
     app.include_router(settings.router)
     app.include_router(uploads.router)
     app.include_router(stories.router)
+    app.include_router(breakdowns.router)
+    app.include_router(post_configs.router)
     app.include_router(posts.router)
 
     # 只对外挂载上传目录；check_dir=False 允许目录在 lifespan 中延迟创建

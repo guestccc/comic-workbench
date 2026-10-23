@@ -41,11 +41,29 @@ def test_story_crud(client):
     assert client.get(f"/api/stories/{story['id']}").status_code == 404
 
 
-def test_story_validation(client):
-    assert (
-        client.post("/api/stories", json={"name": "", "content": "x"}).status_code
-        == 422
+def test_story_name_optional(client):
+    """故事名可留空，拆解后再手动补填。"""
+    created = client.post("/api/stories", json={"content": "内容"})
+    assert created.status_code == 201, created.text
+    story = created.json()
+    assert story["name"] == ""
+
+    # 仅空白字符同样视为留空
+    blank = client.post("/api/stories", json={"name": "   ", "content": "内容"})
+    assert blank.status_code == 201, blank.text
+    assert blank.json()["name"] == ""
+
+    # 拆解得到名称后可补填
+    updated = client.put(
+        f"/api/stories/{story['id']}",
+        json={"name": "拆解得到的名字", "content": "内容", "cover_filename": None},
     )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "拆解得到的名字"
+
+
+def test_story_validation(client):
+    # 故事原文必填
     assert (
         client.post("/api/stories", json={"name": "x", "content": "   "}).status_code
         == 422
@@ -145,3 +163,117 @@ def test_delete_story_with_posts_blocked(client, story):
     # 故事与发文都保留
     assert client.get(f"/api/stories/{story['id']}").status_code == 200
     assert len(client.get("/api/posts").json()) == 1
+
+
+def _save_art_styles(client, styles, active_id=None):
+    response = client.put(
+        "/api/settings/art-styles",
+        json={"styles": styles, "active_id": active_id},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+STYLE_A = {"id": "style-a", "name": "唯美彩铅", "content": "韩式唯美彩铅手绘"}
+STYLE_B = {"id": "style-b", "name": "日系赛璐璐", "content": "日系赛璐璐平涂"}
+
+
+def test_story_art_style_resolved(client):
+    """故事选择画风后，响应中解析出画风名称与描述。"""
+    _save_art_styles(client, [STYLE_A, STYLE_B], active_id="style-a")
+
+    created = client.post(
+        "/api/stories",
+        json={"name": "画风故事", "content": "内容", "art_style_id": "style-a"},
+    )
+    assert created.status_code == 201, created.text
+    story = created.json()
+    assert story["art_style_id"] == "style-a"
+    assert story["art_style_name"] == "唯美彩铅"
+    assert story["art_style_content"] == "韩式唯美彩铅手绘"
+
+    # 列表与详情都会解析画风
+    listed = client.get("/api/stories").json()[0]
+    assert listed["art_style_name"] == "唯美彩铅"
+    detail = client.get(f"/api/stories/{story['id']}").json()
+    assert detail["art_style_content"] == "韩式唯美彩铅手绘"
+
+    # 更换画风
+    updated = client.put(
+        f"/api/stories/{story['id']}",
+        json={
+            "name": "画风故事",
+            "content": "内容",
+            "cover_filename": None,
+            "art_style_id": "style-b",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["art_style_name"] == "日系赛璐璐"
+
+    # 清空画风
+    cleared = client.put(
+        f"/api/stories/{story['id']}",
+        json={
+            "name": "画风故事",
+            "content": "内容",
+            "cover_filename": None,
+            "art_style_id": None,
+        },
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["art_style_id"] is None
+    assert cleared.json()["art_style_name"] is None
+
+
+def test_story_art_style_blank_normalized(client):
+    """空白画风 id 视为未选择。"""
+    created = client.post(
+        "/api/stories",
+        json={"name": "x", "content": "y", "art_style_id": "   "},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["art_style_id"] is None
+
+
+def test_story_invalid_art_style_rejected(client):
+    """不能引用画风列表中不存在的画风。"""
+    _save_art_styles(client, [STYLE_A])
+
+    created = client.post(
+        "/api/stories",
+        json={"name": "x", "content": "y", "art_style_id": "missing"},
+    )
+    assert created.status_code == 422
+    assert created.json()["code"] == "ART_STYLE_NOT_FOUND"
+
+    story = client.post(
+        "/api/stories", json={"name": "x", "content": "y"}
+    ).json()
+    updated = client.put(
+        f"/api/stories/{story['id']}",
+        json={
+            "name": "x",
+            "content": "y",
+            "cover_filename": None,
+            "art_style_id": "missing",
+        },
+    )
+    assert updated.status_code == 422
+    assert updated.json()["code"] == "ART_STYLE_NOT_FOUND"
+
+
+def test_story_art_style_deleted_becomes_dangling(client):
+    """画风被删除后保留引用 id，但不再返回名称/描述。"""
+    _save_art_styles(client, [STYLE_A], active_id="style-a")
+    story = client.post(
+        "/api/stories",
+        json={"name": "x", "content": "y", "art_style_id": "style-a"},
+    ).json()
+
+    _save_art_styles(client, [], active_id=None)
+
+    got = client.get(f"/api/stories/{story['id']}").json()
+    assert got["art_style_id"] == "style-a"
+    assert got["art_style_name"] is None
+    assert got["art_style_content"] is None

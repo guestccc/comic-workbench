@@ -96,6 +96,8 @@ export interface OptimizerCopy {
   emptyCurrentWarning: string
   applySuccess: string
   footerNote: string
+  /** AI 回复中代码块的标题 */
+  codeBlockLabel: string
 }
 
 export const OPTIMIZER_COPY: Record<OptimizerMode, OptimizerCopy> = {
@@ -111,6 +113,7 @@ export const OPTIMIZER_COPY: Record<OptimizerMode, OptimizerCopy> = {
     emptyCurrentWarning: '启动提示词为空，无法优化',
     applySuccess: '已填入编辑器，请确认后保存',
     footerNote: 'AI 基于编辑器中的当前内容优化；应用后仍需点击「保存提示词」。',
+    codeBlockLabel: '优化后的启动提示词',
   },
   art_style: {
     drawerTitle: 'AI 优化画风描述',
@@ -124,6 +127,7 @@ export const OPTIMIZER_COPY: Record<OptimizerMode, OptimizerCopy> = {
     emptyCurrentWarning: '画风描述为空，无法优化',
     applySuccess: '已填入画风描述，点击「保存」生效',
     footerNote: 'AI 基于当前画风描述优化；应用后仍需点击「保存」。',
+    codeBlockLabel: '优化后的画风描述',
   },
 }
 
@@ -135,11 +139,61 @@ export function nextMessageKey(prefix: 'user' | 'ai'): string {
   return `${prefix}-${Date.now()}-${messageSeq}`
 }
 
-/** 去掉模型可能输出的 Markdown 代码围栏，得到可直接使用的提示词。 */
-export function stripCodeFence(text: string): string {
-  const trimmed = text.trim()
-  const matched = trimmed.match(/^```[^\n]*\n([\s\S]*?)\n?```$/)
-  return (matched ? matched[1] : trimmed).trim()
+/** 消息内容的片段：普通对话文本或代码块。 */
+export interface PromptSegment {
+  type: 'text' | 'code'
+  text: string
+}
+
+/**
+ * 把 AI 回复拆成普通文本与代码块。
+ *
+ * 兼容流式输出中尚未闭合的代码块：没有结束围栏时，
+ * 围栏后的内容先按代码块展示，避免把 ``` 直接暴露给用户。
+ */
+export function splitPromptSegments(text: string): PromptSegment[] {
+  const segments: PromptSegment[] = []
+  const fencePattern = /```[^\n]*\r?\n?([\s\S]*?)(?:```|$)/g
+  let cursor = 0
+  let matched: RegExpExecArray | null
+
+  while ((matched = fencePattern.exec(text)) !== null) {
+    const before = text.slice(cursor, matched.index).trim()
+    if (before) {
+      segments.push({ type: 'text', text: before })
+    }
+
+    const code = matched[1].trim()
+    if (code) {
+      segments.push({ type: 'code', text: code })
+    }
+
+    cursor = fencePattern.lastIndex
+  }
+
+  const rest = text.slice(cursor).trim()
+  if (rest) {
+    segments.push({ type: 'text', text: rest })
+  }
+  return segments
+}
+
+/**
+ * 取出 AI 回复中真正可用的提示词。
+ *
+ * 模型可能先寒暄再给代码块；有代码块时只取最长的那个（通常就是完整新版），
+ * 没有代码块时才退回整段文本，保证旧的纯文本回复仍可对比、应用。
+ */
+export function extractPrompt(text: string): string {
+  const codeSegments = splitPromptSegments(text).filter(
+    (segment) => segment.type === 'code',
+  )
+  if (codeSegments.length === 0) {
+    return text.trim()
+  }
+  return codeSegments.reduce((longest, segment) =>
+    segment.text.length > longest.text.length ? segment : longest,
+  ).text
 }
 
 /**

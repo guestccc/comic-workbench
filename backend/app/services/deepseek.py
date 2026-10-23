@@ -21,13 +21,17 @@ from ..config import (
     DEEPSEEK_MODEL,
     DEEPSEEK_READ_TIMEOUT,
     DEEPSEEK_TEMPERATURE,
+    MAX_POST_CONFIG_TITLE_LENGTH,
     MAX_POST_CONTENT_LENGTH,
-    MAX_POST_TITLE_LENGTH,
+    OPTIMIZE_ANALYZE_MAX_TOKENS,
+    OPTIMIZE_ANALYZE_SYSTEM_PROMPT,
+    OPTIMIZE_ANALYZE_TEMPERATURE,
     PROMPT_OPTIMIZE_MAX_TOKENS,
     PROMPT_OPTIMIZE_SYSTEM_PROMPT,
     PROMPT_OPTIMIZE_TEMPERATURE,
 )
 from ..errors import AppError
+from ..schemas import StoryOptimizationAnalysis
 
 logger = logging.getLogger("comic_workbench")
 
@@ -38,15 +42,16 @@ OUTPUT_CONTRACT = """
 重要输出要求（必须严格遵守）：
 1. 只输出一个合法的 json 对象，不要输出 Markdown 代码块、解释或任何多余文字。
 2. json 对象必须包含且只包含以下两个字段：
-   {"title": "小红书图文标题，20 字以内，可带 1-2 个 emoji", "content": "小红书正文描述，300-600 字，分段清晰，可带 emoji 和 3-5 个话题标签"}
+   {"title": "小红书图文标题，18 字以内，可带 1-2 个 emoji", "content": "小红书正文描述，300-600 字，分段清晰，可带 emoji 和 3-5 个话题标签"}
 3. title 与 content 都不能为空。
+4. title 是用户在信息流里第一眼看到的内容（与第 1 页封面图一起），必须让人想点开：用反差、悬念、利益点或强情绪，避免平铺直叙；正文是点进来后才看到的，不要把关键信息全塞进标题。
 """
 
 
 class GeneratedCopy(BaseModel):
     """模型输出经过 Pydantic 二次校验，避免超长或空字段入库。"""
 
-    title: str = Field(min_length=1, max_length=MAX_POST_TITLE_LENGTH)
+    title: str = Field(min_length=1, max_length=MAX_POST_CONFIG_TITLE_LENGTH)
     content: str = Field(min_length=1, max_length=MAX_POST_CONTENT_LENGTH)
 
 
@@ -131,14 +136,23 @@ def _post(
         return client.post(url, headers=headers, json=payload)
 
 
-def _send_request(api_key: str, messages: list[dict[str, str]]) -> httpx.Response:
-    """发送一次请求；网络层错误直接映射，HTTP 状态错误交给上层映射。"""
+def _send_request(
+    api_key: str,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int = DEEPSEEK_MAX_TOKENS,
+    temperature: float = DEEPSEEK_TEMPERATURE,
+) -> httpx.Response:
+    """发送一次 JSON 请求；网络层错误直接映射，HTTP 状态错误交给上层映射。
+
+    文案生成使用默认参数；改动解读等场景可按需覆盖 max_tokens / temperature。
+    """
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": messages,
         "response_format": {"type": "json_object"},
-        "max_tokens": DEEPSEEK_MAX_TOKENS,
-        "temperature": DEEPSEEK_TEMPERATURE,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
         "stream": False,
     }
     timeout = httpx.Timeout(
@@ -374,7 +388,7 @@ def stream_art_style_optimization(
     )
 
 
-def _load_json_object(text: str) -> dict:
+def _load_json_object(text: str, label: str = "文案") -> dict:
     """容忍 Markdown 围栏和前后杂质，提取 JSON 对象。"""
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -397,7 +411,7 @@ def _load_json_object(text: str) -> dict:
             return value
 
     raise AppError(
-        502, "DeepSeek 返回的文案不是合法 JSON，请重试", "DEEPSEEK_BAD_OUTPUT"
+        502, f"DeepSeek 返回的{label}不是合法 JSON，请重试", "DEEPSEEK_BAD_OUTPUT"
     )
 
 
@@ -470,6 +484,92 @@ def generate_copy(
         except AppError as exc:
             if exc.code == "DEEPSEEK_BAD_OUTPUT" and attempt == 0:
                 logger.warning("DeepSeek 输出解析失败，重试一次：%s", exc.message)
+                last_error = exc
+                continue
+            raise
+
+    raise last_error or AppError(
+        502, "DeepSeek 返回内容异常，请重试", "DEEPSEEK_BAD_OUTPUT"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 原文 → 优化文：逐句改动解读
+# ---------------------------------------------------------------------------
+
+
+def _parse_analysis_response(response: httpx.Response) -> StoryOptimizationAnalysis:
+    """解析改动解读结果；格式问题统一标记为 DEEPSEEK_BAD_OUTPUT。"""
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise AppError(
+            502, "DeepSeek 返回了无法解析的响应，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+
+    try:
+        choice = data["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        text = choice["message"]["content"]
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        raise AppError(
+            502, "DeepSeek 返回内容为空，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+
+    if finish_reason == "length":
+        raise AppError(502, "AI 解读内容被截断，请重试", "DEEPSEEK_BAD_OUTPUT")
+    if not isinstance(text, str) or not text.strip():
+        raise AppError(502, "DeepSeek 返回内容为空，请重试", "DEEPSEEK_BAD_OUTPUT")
+
+    payload = _load_json_object(text, label="解读")
+    try:
+        return StoryOptimizationAnalysis.model_validate(payload)
+    except ValidationError as exc:
+        raise AppError(
+            502, "DeepSeek 返回的解读格式不正确，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+
+
+def analyze_optimization_changes(
+    api_key: str,
+    story_name: str,
+    original_content: str,
+    optimized_content: str,
+) -> StoryOptimizationAnalysis:
+    """让 DeepSeek 逐条解释原文到优化文的改动。
+
+    与文案生成一致：仅对「输出格式异常」重试一次；
+    鉴权、限流、网络、超时等错误直接抛出，由前端提示用户重试。
+    """
+    messages = [
+        {"role": "system", "content": OPTIMIZE_ANALYZE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"故事名称：{story_name.strip() or '未命名故事'}\n\n"
+                "<original>\n"
+                f"{original_content}\n"
+                "</original>\n\n"
+                "<optimized>\n"
+                f"{optimized_content}\n"
+                "</optimized>"
+            ),
+        },
+    ]
+    last_error: AppError | None = None
+
+    for attempt in range(2):
+        try:
+            response = _send_request(
+                api_key,
+                messages,
+                max_tokens=OPTIMIZE_ANALYZE_MAX_TOKENS,
+                temperature=OPTIMIZE_ANALYZE_TEMPERATURE,
+            )
+            return _parse_analysis_response(response)
+        except AppError as exc:
+            if exc.code == "DEEPSEEK_BAD_OUTPUT" and attempt == 0:
+                logger.warning("DeepSeek 解读输出解析失败，重试一次：%s", exc.message)
                 last_error = exc
                 continue
             raise

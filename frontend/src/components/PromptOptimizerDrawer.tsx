@@ -9,7 +9,7 @@ import {
 } from '../api/client'
 import PromptOptimizerChat from './PromptOptimizerChat'
 import OptimizerCompareModal from './OptimizerCompareModal'
-import { OPTIMIZER_COPY, buildHistory, nextMessageKey, stripCodeFence } from '../utils/promptOptimizer'
+import { OPTIMIZER_COPY, buildHistory, extractPrompt, nextMessageKey } from '../utils/promptOptimizer'
 import type { ChatMessage, OptimizerMode } from '../utils/promptOptimizer'
 import { copyText } from '../utils/clipboard'
 
@@ -133,7 +133,7 @@ export default function PromptOptimizerDrawer({
   }
 
   const handleCompare = (content: string) => {
-    const next = stripCodeFence(content)
+    const next = extractPrompt(content)
     if (!next) {
       message.warning('没有可对比的内容')
       return
@@ -155,7 +155,7 @@ export default function PromptOptimizerDrawer({
   }
 
   const handleApply = (content: string) => {
-    const prompt = stripCodeFence(content)
+    const prompt = extractPrompt(content)
     if (!prompt) {
       message.warning('没有可应用的提示词内容')
       return

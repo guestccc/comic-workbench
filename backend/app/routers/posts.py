@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from ..crud import (
-    get_active_art_style,
+    get_art_styles,
     get_start_prompt,
     resolve_deepseek_key,
 )
@@ -98,9 +98,17 @@ def generate_post_copy(
     story_name = story.name
     story_content = story.content
     start_prompt, _ = get_start_prompt(db)
-    active_style = get_active_art_style(db)
-    art_style = active_style["content"] if active_style is not None else None
-    art_style_name = active_style["name"] if active_style is not None else None
+    # 生成文案优先使用故事自己的画风，故事画风无效时回退全局当前画风
+    styles, active_id = get_art_styles(db)
+    style = next(
+        (item for item in styles if item["id"] == story.art_style_id), None
+    )
+    if style is None and active_id is not None:
+        style = next(
+            (item for item in styles if item["id"] == active_id), None
+        )
+    art_style = style["content"] if style is not None else None
+    art_style_name = style["name"] if style is not None else None
     api_key, _, _ = resolve_deepseek_key(db)
     db.rollback()
 

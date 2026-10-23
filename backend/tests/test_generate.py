@@ -62,6 +62,66 @@ def test_prompt_placeholders_are_replaced(client, story, configure_key, mock_dee
     assert "{story_content}" not in system_prompt
 
 
+def test_story_art_style_takes_priority(
+    client, configure_key, mock_deepseek
+):
+    """生成文案优先使用故事自己的画风，而不是全局当前画风。"""
+    client.put(
+        "/api/settings/art-styles",
+        json={
+            "styles": [
+                {"id": "style-a", "name": "唯美彩铅", "content": "韩式唯美彩铅"},
+                {"id": "style-b", "name": "日系赛璐璐", "content": "日系赛璐璐平涂"},
+            ],
+            "active_id": "style-a",
+        },
+    )
+    client.put(
+        "/api/settings/prompt",
+        json={"content": "画风：{art_style_name} / {art_style}"},
+    )
+    story = client.post(
+        "/api/stories",
+        json={"name": "画风故事", "content": "内容", "art_style_id": "style-b"},
+    ).json()
+
+    mock_deepseek["response"] = make_response()
+    assert _generate(client, story["id"]).status_code == 200
+
+    _, messages = mock_deepseek["calls"][0]
+    system_prompt = messages[0]["content"]
+    assert "日系赛璐璐" in system_prompt
+    assert "日系赛璐璐平涂" in system_prompt
+    assert "唯美彩铅" not in system_prompt
+
+
+def test_generate_falls_back_to_active_style(
+    client, story, configure_key, mock_deepseek
+):
+    """故事未选画风时回退到全局当前画风。"""
+    client.put(
+        "/api/settings/art-styles",
+        json={
+            "styles": [
+                {"id": "style-a", "name": "唯美彩铅", "content": "韩式唯美彩铅"}
+            ],
+            "active_id": "style-a",
+        },
+    )
+    client.put(
+        "/api/settings/prompt",
+        json={"content": "画风：{art_style_name} / {art_style}"},
+    )
+
+    mock_deepseek["response"] = make_response()
+    assert _generate(client, story["id"]).status_code == 200
+
+    _, messages = mock_deepseek["calls"][0]
+    system_prompt = messages[0]["content"]
+    assert "唯美彩铅" in system_prompt
+    assert "韩式唯美彩铅" in system_prompt
+
+
 def test_env_key_takes_priority(client, story, configure_key, mock_deepseek, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env-9999")
     mock_deepseek["response"] = make_response()

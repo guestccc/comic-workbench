@@ -42,6 +42,42 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
+def apply_schema_migrations(engine: Engine) -> None:
+    """为旧版数据库补充新增字段。
+
+    SQLite 的 create_all 不会给已存在的表加列，因此这里做幂等检查。
+    新库由 create_all 直接按最新模型建表，本函数不会做任何修改。
+    """
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.exec_driver_sql("PRAGMA table_info(stories)")
+        }
+        if columns and "art_style_id" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN art_style_id VARCHAR(64)"
+            )
+
+        # AI 改动解读的持久化缓存（原文 / 优化文未变时不再调用模型）
+        breakdown_columns = {
+            row[1]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(story_breakdowns)"
+            )
+        }
+        if breakdown_columns and "analysis_cache" not in breakdown_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE story_breakdowns ADD COLUMN analysis_cache JSON"
+            )
+        if (
+            breakdown_columns
+            and "analysis_input_hash" not in breakdown_columns
+        ):
+            connection.exec_driver_sql(
+                "ALTER TABLE story_breakdowns ADD COLUMN analysis_input_hash VARCHAR(64)"
+            )
+
+
 def get_db(request: Request) -> Iterator[Session]:
     """FastAPI 依赖：每个请求独立 Session，结束时关闭。
 

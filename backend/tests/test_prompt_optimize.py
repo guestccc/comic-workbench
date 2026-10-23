@@ -73,7 +73,11 @@ def test_stream_success(client, configure_key, mock_deepseek_stream):
     assert payload["stream"] is True
     assert payload["max_tokens"] == 8000
     assert payload["messages"][0]["role"] == "system"
-    assert "你是分镜师，请根据故事生成条漫分镜。" in payload["messages"][0]["content"]
+    system_prompt = payload["messages"][0]["content"]
+    assert "你是分镜师，请根据故事生成条漫分镜。" in system_prompt
+    # 新版内容必须包在代码块中，且禁止寒暄 / 确认句污染回复
+    assert "Markdown 代码块" in system_prompt
+    assert "不要复述用户诉求" in system_prompt
     assert payload["messages"][-1] == {
         "role": "user",
         "content": "让提示词更结构化",

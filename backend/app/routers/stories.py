@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..crud import get_art_styles
 from ..database import get_db
 from ..errors import AppError
 from ..models import Post, Story
@@ -15,13 +16,40 @@ from ..services.files import delete_cover_file, validate_cover_filename
 router = APIRouter(prefix="/api/stories", tags=["故事"])
 
 
-def _to_story_read(story: Story) -> StoryRead:
+def _load_art_styles(db: Session) -> dict[str, dict[str, str]]:
+    """一次性读取画风列表，构建 id -> {name, content} 映射。"""
+    styles, _ = get_art_styles(db)
+    return {style["id"]: style for style in styles}
+
+
+def _validate_art_style_id(
+    art_style_id: str | None, styles: dict[str, dict[str, str]]
+) -> None:
+    """故事只能引用画风列表中已存在的画风。"""
+    if art_style_id is not None and art_style_id not in styles:
+        raise AppError(
+            422,
+            "所选画风不存在，请先在「启动提示词」页的画风列表中添加或重新选择",
+            "ART_STYLE_NOT_FOUND",
+        )
+
+
+def _to_story_read(story: Story, styles: dict[str, dict[str, str]]) -> StoryRead:
+    """把故事转为响应模型，并解析出画风名称与描述。
+
+    画风被删除后 art_style_id 仍保留（悬空引用），此时名称与描述为 None，
+    由前端提示用户重新选择，避免静默丢失用户的选择记录。
+    """
+    style = styles.get(story.art_style_id) if story.art_style_id else None
     return StoryRead(
         id=story.id,
         name=story.name,
         content=story.content,
         cover_filename=story.cover_filename,
         cover_url=f"/uploads/{story.cover_filename}" if story.cover_filename else None,
+        art_style_id=story.art_style_id,
+        art_style_name=style["name"] if style else None,
+        art_style_content=style["content"] if style else None,
         created_at=story.created_at,
         updated_at=story.updated_at,
     )
@@ -39,7 +67,8 @@ def list_stories(db: Session = Depends(get_db)) -> list[StoryRead]:
     stories = db.scalars(
         select(Story).order_by(Story.updated_at.desc(), Story.id.desc())
     ).all()
-    return [_to_story_read(story) for story in stories]
+    styles = _load_art_styles(db)
+    return [_to_story_read(story, styles) for story in stories]
 
 
 @router.post("", response_model=StoryRead, status_code=201)
@@ -49,20 +78,25 @@ def create_story(
     upload_dir = request.app.state.app_settings.upload_dir
     validate_cover_filename(payload.cover_filename, upload_dir)
 
+    styles = _load_art_styles(db)
+    _validate_art_style_id(payload.art_style_id, styles)
+
     story = Story(
         name=payload.name,
         content=payload.content,
         cover_filename=payload.cover_filename,
+        art_style_id=payload.art_style_id,
     )
     db.add(story)
     db.commit()
     db.refresh(story)
-    return _to_story_read(story)
+    return _to_story_read(story, styles)
 
 
 @router.get("/{story_id}", response_model=StoryRead)
 def get_story(story_id: int, db: Session = Depends(get_db)) -> StoryRead:
-    return _to_story_read(_get_story_or_404(db, story_id))
+    story = _get_story_or_404(db, story_id)
+    return _to_story_read(story, _load_art_styles(db))
 
 
 @router.put("/{story_id}", response_model=StoryRead)
@@ -79,9 +113,13 @@ def update_story(
     if payload.cover_filename is not None and payload.cover_filename != old_cover:
         validate_cover_filename(payload.cover_filename, upload_dir)
 
+    styles = _load_art_styles(db)
+    _validate_art_style_id(payload.art_style_id, styles)
+
     story.name = payload.name
     story.content = payload.content
     story.cover_filename = payload.cover_filename
+    story.art_style_id = payload.art_style_id
     db.commit()
     db.refresh(story)
 
@@ -89,7 +127,7 @@ def update_story(
     if old_cover and old_cover != story.cover_filename:
         delete_cover_file(old_cover, upload_dir)
 
-    return _to_story_read(story)
+    return _to_story_read(story, styles)
 
 
 @router.delete("/{story_id}", status_code=204)

@@ -73,7 +73,11 @@ export default function PostsPage() {
   }, [])
 
   const storyOptions = useMemo(
-    () => stories.map((story) => ({ value: story.id, label: story.name })),
+    () =>
+      stories.map((story) => ({
+        value: story.id,
+        label: story.name.trim() || '未命名故事',
+      })),
     [stories],
   )
 
@@ -214,6 +218,8 @@ export default function PostsPage() {
       dataIndex: 'story_name',
       width: 140,
       ellipsis: true,
+      render: (name: string) =>
+        name.trim() ? name : <Typography.Text type="secondary">未命名故事</Typography.Text>,
     },
     {
       title: '标题',

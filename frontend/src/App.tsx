@@ -11,6 +11,7 @@ import PostsPage from './pages/PostsPage'
 import PromptPage from './pages/PromptPage'
 import SettingsPage from './pages/SettingsPage'
 import StoriesPage from './pages/StoriesPage'
+import StoryDetailPage from './pages/StoryDetailPage'
 
 const { Sider, Content, Header } = Layout
 
@@ -26,6 +27,28 @@ const pageTitles: Record<string, string> = {
   '/stories': '故事库',
   '/posts': '小红书发文',
   '/settings': '应用设置',
+}
+
+const menuKeys = Object.keys(pageTitles)
+
+/**
+ * 找出当前路径对应的菜单项。
+ *
+ * 详情页等子路由（如 /stories/12）需要高亮父级菜单，
+ * 因此按路径前缀匹配，而不是只做全等比较。
+ */
+function resolveMenuKey(pathname: string): string {
+  return (
+    menuKeys.find(
+      (key) => pathname === key || pathname.startsWith(`${key}/`),
+    ) ?? pathname
+  )
+}
+
+/** 详情页不在 menuItems 中，单独按前缀判断标题。 */
+function resolvePageTitle(pathname: string): string {
+  if (pathname.startsWith('/stories/')) return '故事详情'
+  return pageTitles[pathname] ?? '条漫工作台'
 }
 
 export default function App() {
@@ -48,7 +71,7 @@ export default function App() {
         </div>
         <Menu
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={[resolveMenuKey(location.pathname)]}
           items={menuItems}
           onClick={handleMenuClick}
           style={{ borderInlineEnd: 'none' }}
@@ -59,15 +82,23 @@ export default function App() {
       <Layout>
         <Header className="app-header">
           <Typography.Text type="secondary">
-            {pageTitles[location.pathname] ?? '条漫工作台'}
+            {resolvePageTitle(location.pathname)}
           </Typography.Text>
         </Header>
-        <Content className="app-content">
+        <Content
+          className={
+            // 故事详情页内容较宽，取消最大宽度限制，让分镜铺满屏幕
+            location.pathname.startsWith('/stories/')
+              ? 'app-content app-content-wide'
+              : 'app-content'
+          }
+        >
           <Routes>
             <Route path="/" element={<Navigate to="/prompt" replace />} />
             <Route path="/prompt" element={<PromptPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/stories" element={<StoriesPage />} />
+            <Route path="/stories/:id" element={<StoryDetailPage />} />
             <Route path="/posts" element={<PostsPage />} />
             <Route path="*" element={<Navigate to="/prompt" replace />} />
           </Routes>
