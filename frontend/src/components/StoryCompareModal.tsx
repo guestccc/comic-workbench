@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -12,6 +12,7 @@ import {
 } from 'antd'
 import {
   DiffOutlined,
+  OrderedListOutlined,
   ReloadOutlined,
   RobotOutlined,
 } from '@ant-design/icons'
@@ -20,7 +21,13 @@ import ReactDiffViewer, {
   type ReactDiffViewerStylesOverride,
 } from 'react-diff-viewer-continued'
 import { api, getErrorMessage } from '../api/client'
-import type { StoryOptimizationAnalysis } from '../types'
+import type {
+  StoryboardMappingItem,
+  StoryboardPage,
+  StoryOptimizationAnalysis,
+} from '../types'
+import { alignPagesToText } from '../utils/pageAlignment'
+import MappingArticleView from './MappingArticleView'
 
 interface StoryCompareModalProps {
   open: boolean
@@ -29,6 +36,10 @@ interface StoryCompareModalProps {
   original: string
   /** 优化后文章，显示在右侧 */
   optimized: string
+  /** 分镜页；用于在优化文上标注每段对应的镜头 */
+  pages?: StoryboardPage[]
+  /** 分镜对照表；有 mapping 时优先用它标注页码 */
+  mapping?: StoryboardMappingItem[]
   /** 未配置 DeepSeek Key 时禁用 AI 解读 */
   aiEnabled: boolean
   /** 原文在拆解后被修改过，对比结果可能不一致 */
@@ -82,6 +93,8 @@ export default function StoryCompareModal({
   storyId,
   original,
   optimized,
+  pages = [],
+  mapping = [],
   aiEnabled,
   isStale,
   onClose,
@@ -90,6 +103,12 @@ export default function StoryCompareModal({
   const [analyzing, setAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState('')
   const inFlightRef = useRef(false)
+
+  // 把优化文按分镜页切开，供「分镜对照」标签页展示
+  const alignment = useMemo(
+    () => alignPagesToText(optimized, pages),
+    [optimized, pages],
+  )
 
   // 优化文被重新拆解或手动编辑后，旧解读不再可信
   useEffect(() => {
@@ -138,7 +157,7 @@ export default function StoryCompareModal({
         />
       )}
       <Typography.Text type="secondary">
-        左侧为原文，右侧为优化后文章；深色块标出字符级改动。
+        左侧为原文，右侧为优化后文章；深色块标出字符级改动。想看每段对应第几页，切到「分镜对照」。
       </Typography.Text>
       <Space size={16} wrap>
         <Typography.Text>
@@ -253,6 +272,82 @@ export default function StoryCompareModal({
     </div>
   )
 
+  const pageMapPane = (
+    <div className="page-map">
+      {mapping.length > 0 ? (
+        <>
+          <Typography.Text type="secondary">
+            已使用分镜对照表：蓝色数字是对照段号，悬浮可看本段简述。
+          </Typography.Text>
+          <MappingArticleView mapping={mapping} />
+        </>
+      ) : (
+        <>
+          <Typography.Text type="secondary">
+            按优化文原文顺序分段，块头「第X页」是对应的分镜页；同一段文字被拆到相邻页时会合并显示。
+            第 1 页是钩子，综合开头信息，通常不对应单独段落。
+          </Typography.Text>
+          {alignment.blocks.length === 0 ? (
+            <Empty description="还没有可对照的分镜页" />
+          ) : (
+            <div className="page-map-list">
+              {alignment.blocks.map((block, index) => (
+                <div
+                  className="page-map-block"
+                  key={`${block.pageNumbers.join('-')}-${index}`}
+                >
+                  <div className="page-map-header">
+                    {block.pageNumbers.length > 0 ? (
+                      block.pageNumbers.map((pageNumber) => (
+                        <Tag color="blue" key={pageNumber}>
+                          第{pageNumber}页
+                        </Tag>
+                      ))
+                    ) : (
+                      <Tag>开头</Tag>
+                    )}
+                    {block.pageRoles.map((role, roleIndex) => (
+                      <Tag key={`${role}-${roleIndex}`}>{role}</Tag>
+                    ))}
+                    {block.mains[0] && (
+                      <Typography.Text
+                        type="secondary"
+                        className="page-map-main"
+                      >
+                        {block.mains[0]}
+                      </Typography.Text>
+                    )}
+                  </div>
+                  <p className="page-map-text">{block.text}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          {alignment.unmapped.length > 0 && (
+            <Alert
+              type="info"
+              showIcon
+              message="未自动对齐的分镜页"
+              description={
+                <Space wrap size={4}>
+                  {alignment.unmapped.map((page) => (
+                    <Tag key={page.page_number}>
+                      第{page.page_number}页
+                      {page.page_number === 1 ? '（钩子）' : ''}
+                    </Tag>
+                  ))}
+                  <Typography.Text type="secondary">
+                    第 1 页为钩子；其余页如未对齐，请检查副旁白是否改写过多。
+                  </Typography.Text>
+                </Space>
+              }
+            />
+          )}
+        </>
+      )}
+    </div>
+  )
+
   return (
     <Modal
       title="原文 / 优化文对比"
@@ -274,6 +369,16 @@ export default function StoryCompareModal({
               </Space>
             ),
             children: diffPane,
+          },
+          {
+            key: 'pages',
+            label: (
+              <Space size={6}>
+                <OrderedListOutlined />
+                分镜对照
+              </Space>
+            ),
+            children: pageMapPane,
           },
           {
             key: 'analysis',

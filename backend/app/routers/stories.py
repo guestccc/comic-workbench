@@ -2,19 +2,44 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..crud import get_art_styles
+from ..config import MAX_ZHIHU_ALIASES
+from ..crud import get_art_styles, resolve_deepseek_key
 from ..database import get_db
 from ..errors import AppError
-from ..models import Post, Story
-from ..schemas import StoryCreate, StoryRead, StoryUpdate
+from ..models import (
+    Post,
+    Story,
+    StoryChapterPostConfig,
+    StoryPostConfig,
+)
+from ..schemas import (
+    StoryCreate,
+    StoryRead,
+    StoryUpdate,
+    StoryZhihuUpdate,
+    ZhihuAliasSuggestRequest,
+    ZhihuAliasSuggestionsRead,
+)
+from ..services.deepseek import generate_zhihu_aliases
+from ..services.zhihu import (
+    ALIAS_PATTERN,
+    apply_alias_prefix,
+    title_bigrams,
+    validate_alias,
+)
 from ..services.files import (
     delete_cover_file,
     delete_group_photo,
+    delete_story_chapter_assets,
+    delete_story_character_assets,
     delete_story_page_images,
+    page_image_url,
     validate_cover_filename,
 )
 
@@ -39,22 +64,41 @@ def _validate_art_style_id(
         )
 
 
-def _to_story_read(story: Story, styles: dict[str, dict[str, str]]) -> StoryRead:
+def _to_story_read(
+    story: Story,
+    styles: dict[str, dict[str, str]],
+    upload_dir: Path,
+) -> StoryRead:
     """把故事转为响应模型，并解析出画风名称与描述。
 
     画风被删除后 art_style_id 仍保留（悬空引用），此时名称与描述为 None，
     由前端提示用户重新选择，避免静默丢失用户的选择记录。
+
+    封面：优先使用单独上传的封面；没有时默认取第 1 页镜头的成品图，
+    这样拆完分镜、出过图的故事在列表里自然就有封面。
     """
     style = styles.get(story.art_style_id) if story.art_style_id else None
+    cover_url = (
+        f"/uploads/{story.cover_filename}" if story.cover_filename else None
+    )
+    if cover_url is None:
+        cover_url = page_image_url(upload_dir, story.id, 1)
+    aliases = list(story.zhihu_aliases or [])
+    if story.zhihu_alias and story.zhihu_alias not in aliases:
+        aliases.insert(0, story.zhihu_alias)
     return StoryRead(
         id=story.id,
         name=story.name,
         content=story.content,
         cover_filename=story.cover_filename,
-        cover_url=f"/uploads/{story.cover_filename}" if story.cover_filename else None,
+        cover_url=cover_url,
         art_style_id=story.art_style_id,
         art_style_name=style["name"] if style else None,
         art_style_content=style["content"] if style else None,
+        zhihu_title=story.zhihu_title,
+        zhihu_article_id=story.zhihu_article_id,
+        zhihu_alias=story.zhihu_alias,
+        zhihu_aliases=aliases,
         created_at=story.created_at,
         updated_at=story.updated_at,
     )
@@ -67,13 +111,36 @@ def _get_story_or_404(db: Session, story_id: int) -> Story:
     return story
 
 
+def _validate_alias_unique(
+    db: Session, story_id: int, alias: str
+) -> None:
+    """本地故事之间不允许使用同一个搜索别名，避免用户记混。"""
+    if not alias:
+        return
+    conflict = db.scalar(
+        select(Story).where(
+            Story.zhihu_alias == alias,
+            Story.id != story_id,
+        )
+    )
+    if conflict is not None:
+        raise AppError(
+            409,
+            f"别名「{alias}」已被故事《{conflict.name}》使用",
+            "ALIAS_ALREADY_USED",
+        )
+
+
 @router.get("", response_model=list[StoryRead])
-def list_stories(db: Session = Depends(get_db)) -> list[StoryRead]:
+def list_stories(
+    request: Request, db: Session = Depends(get_db)
+) -> list[StoryRead]:
     stories = db.scalars(
         select(Story).order_by(Story.updated_at.desc(), Story.id.desc())
     ).all()
     styles = _load_art_styles(db)
-    return [_to_story_read(story, styles) for story in stories]
+    upload_dir = request.app.state.app_settings.upload_dir
+    return [_to_story_read(story, styles, upload_dir) for story in stories]
 
 
 @router.post("", response_model=StoryRead, status_code=201)
@@ -95,13 +162,19 @@ def create_story(
     db.add(story)
     db.commit()
     db.refresh(story)
-    return _to_story_read(story, styles)
+    return _to_story_read(story, styles, upload_dir)
 
 
 @router.get("/{story_id}", response_model=StoryRead)
-def get_story(story_id: int, db: Session = Depends(get_db)) -> StoryRead:
+def get_story(
+    story_id: int, request: Request, db: Session = Depends(get_db)
+) -> StoryRead:
     story = _get_story_or_404(db, story_id)
-    return _to_story_read(story, _load_art_styles(db))
+    return _to_story_read(
+        story,
+        _load_art_styles(db),
+        request.app.state.app_settings.upload_dir,
+    )
 
 
 @router.put("/{story_id}", response_model=StoryRead)
@@ -132,7 +205,136 @@ def update_story(
     if old_cover and old_cover != story.cover_filename:
         delete_cover_file(old_cover, upload_dir)
 
-    return _to_story_read(story, styles)
+    return _to_story_read(story, styles, upload_dir)
+
+
+@router.patch("/{story_id}/zhihu", response_model=StoryRead)
+def update_story_zhihu(
+    story_id: int,
+    payload: StoryZhihuUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StoryRead:
+    """保存知乎原文标题、原文 ID 与搜索别名，并同步已保存文案的开头。"""
+    story = _get_story_or_404(db, story_id)
+    aliases = (
+        list(payload.zhihu_aliases)
+        if payload.zhihu_aliases is not None
+        else list(story.zhihu_aliases or [])
+    )
+    if payload.zhihu_alias and payload.zhihu_alias not in aliases:
+        aliases.append(payload.zhihu_alias)
+    if len(aliases) > MAX_ZHIHU_ALIASES:
+        raise AppError(
+            422,
+            f"候选别名最多保存 {MAX_ZHIHU_ALIASES} 个",
+            "TOO_MANY_ZHIHU_ALIASES",
+        )
+    for alias in aliases:
+        validate_alias(payload.zhihu_title, alias)
+    _validate_alias_unique(db, story_id, payload.zhihu_alias)
+
+    old_alias = story.zhihu_alias
+    story.zhihu_title = payload.zhihu_title
+    story.zhihu_article_id = payload.zhihu_article_id
+    story.zhihu_alias = payload.zhihu_alias
+    story.zhihu_aliases = aliases
+
+    if old_alias != payload.zhihu_alias:
+        chapter_configs = db.scalars(
+            select(StoryChapterPostConfig).where(
+                StoryChapterPostConfig.story_id == story_id
+            )
+        ).all()
+        for config in chapter_configs:
+            if config.content.strip():
+                config.content = apply_alias_prefix(
+                    config.content, payload.zhihu_alias
+                )
+        legacy_config = db.scalar(
+            select(StoryPostConfig).where(StoryPostConfig.story_id == story_id)
+        )
+        if legacy_config is not None and legacy_config.content.strip():
+            legacy_config.content = apply_alias_prefix(
+                legacy_config.content, payload.zhihu_alias
+            )
+
+    db.commit()
+    db.refresh(story)
+    return _to_story_read(
+        story,
+        _load_art_styles(db),
+        request.app.state.app_settings.upload_dir,
+    )
+
+
+@router.post(
+    "/{story_id}/zhihu/alias-suggestions",
+    response_model=ZhihuAliasSuggestionsRead,
+)
+def suggest_zhihu_aliases(
+    story_id: int,
+    payload: ZhihuAliasSuggestRequest | None = None,
+    db: Session = Depends(get_db),
+) -> ZhihuAliasSuggestionsRead:
+    """用 DeepSeek 生成 6 个候选别名，并过滤标题文字/本地重复。
+
+    payload.title 可传入弹窗里尚未保存的标题；不传时使用故事已保存标题。
+    """
+    story = _get_story_or_404(db, story_id)
+    title = (
+        payload.title if payload is not None and payload.title else story.zhihu_title
+    ).strip()
+    if not title:
+        raise AppError(
+            422,
+            "请先填写知乎原文标题，再生成别名",
+            "ZHIHU_TITLE_REQUIRED",
+        )
+
+    api_key, _, _ = resolve_deepseek_key(db)
+    other_stories = db.scalars(
+        select(Story).where(Story.id != story_id)
+    ).all()
+    existing_aliases: set[str] = set()
+    for item in other_stories:
+        existing_aliases.update(item.zhihu_aliases or [])
+        if item.zhihu_alias:
+            existing_aliases.add(item.zhihu_alias)
+    db.rollback()
+
+    if api_key is None:
+        raise AppError(
+            409,
+            "尚未配置 DeepSeek API Key，请先到「设置」页配置，或手动填写别名",
+            "DEEPSEEK_KEY_MISSING",
+        )
+
+    aliases = generate_zhihu_aliases(api_key, title)
+    forbidden_bigrams = title_bigrams(title)
+    valid: list[str] = []
+    for alias in aliases:
+        alias = alias.strip()
+        if not ALIAS_PATTERN.fullmatch(alias):
+            continue
+        alias_bigrams = {
+            alias[index : index + 2] for index in range(len(alias) - 1)
+        }
+        if forbidden_bigrams & alias_bigrams:
+            continue
+        if alias in existing_aliases or alias in valid:
+            continue
+        valid.append(alias)
+        if len(valid) >= 6:
+            break
+
+    if not valid:
+        raise AppError(
+            502,
+            "别名生成失败，请稍后重试或手动填写",
+            "ALIAS_GENERATION_FAILED",
+        )
+    return ZhihuAliasSuggestionsRead(aliases=valid)
 
 
 @router.delete("/{story_id}", status_code=204)
@@ -158,7 +360,13 @@ def delete_story(
     db.delete(story)
     db.commit()
     delete_cover_file(cover_filename, request.app.state.app_settings.upload_dir)
-    # 分镜成品图目录与人物合照随故事一起清理
+    # 分镜成品图、章节封面/引导卡、角色资产图与人物合照随故事一起清理
     delete_story_page_images(request.app.state.app_settings.upload_dir, story_id)
+    delete_story_chapter_assets(
+        request.app.state.app_settings.upload_dir, story_id
+    )
+    delete_story_character_assets(
+        request.app.state.app_settings.upload_dir, story_id
+    )
     delete_group_photo(request.app.state.app_settings.upload_dir, story_id)
     return Response(status_code=204)

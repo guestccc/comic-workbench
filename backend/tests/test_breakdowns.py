@@ -51,6 +51,40 @@ def _page_payload(**overrides):
     return payload
 
 
+def _mapping_items(numbers, excluded=()):
+    return [
+        {
+            "page_number": number,
+            "source_text": f"第{number}段原文",
+            "summary": f"第{number}段",
+            "paragraph": f"第{number}段",
+            "part": "1/1",
+            "excluded": number in excluded,
+        }
+        for number in numbers
+    ]
+
+
+def _chapter_payload(number, mapping_pages, title=None):
+    return {
+        "chapter_number": number,
+        "title": title or f"第{number}章",
+        "mapping_page_numbers": mapping_pages,
+        "cover": {
+            "label": f"第{number}章 · 标题",
+            "narration_main": "这一次，她只想回家",
+            "narration_highlight": "回家",
+            "narration_sub": "重来一世，她只想回家见奶奶。",
+            "image_prompt": "",
+        },
+        "guide": {
+            "text": "关注我，看更多重生爽文",
+            "sub_text": "下一章：祝卿当场摔杯",
+            "image_prompt": "",
+        },
+    }
+
+
 def _patch_breakdown(client, story_id, **payload):
     return client.patch(f"/api/stories/{story_id}/breakdown", json=payload)
 
@@ -138,6 +172,367 @@ def test_patch_partial_update_keeps_fields(client):
     # 未提供的字段保持不变
     assert data["optimized_content"] == "优化后的完整故事……"
     assert len(data["characters"]) == 2
+
+
+def test_patch_mapping_round_trip(client):
+    """分镜对照表可单独写入，且不影响优化文与角色卡。"""
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    mapping = [
+        {
+            "page_number": 1,
+            "source_text": "第一段原文",
+            "summary": "第一段",
+            "paragraph": "第1段",
+            "part": "1/1",
+        },
+        {
+            "page_number": 2,
+            "source_text": "第二段原文",
+            "summary": "第二段",
+            "paragraph": "第2段",
+            "part": "1/1",
+        },
+    ]
+
+    response = _patch_breakdown(client, story_id, mapping=mapping)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["mapping"] == [
+        {**item, "excluded": False} for item in mapping
+    ]
+    assert data["optimized_content"] == "优化后的完整故事……"
+    assert len(data["characters"]) == 2
+    assert data["pages"] == []
+
+
+def test_patch_chapters_round_trip(client):
+    """章节可按对照顺序写入，并返回封面 / 引导卡占位信息。"""
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    mapping = _mapping_items([1, 2, 3, 4])
+    assert _patch_breakdown(client, story_id, mapping=mapping).status_code == 200
+
+    chapters = [
+        _chapter_payload(1, [1, 2], "第一章 重来"),
+        _chapter_payload(2, [3, 4], "第二章 真相"),
+    ]
+    response = _patch_breakdown(client, story_id, chapters=chapters)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert [item["chapter_number"] for item in data["chapters"]] == [1, 2]
+    assert data["chapters"][0]["title"] == "第一章 重来"
+    assert data["chapters"][0]["cover"]["narration_main"] == (
+        "这一次，她只想回家"
+    )
+    assert data["chapters"][0]["cover"]["image_url"] is None
+    assert data["chapters"][0]["guide"]["image_url"] is None
+    # 章节不影响已有对照表与角色卡
+    assert len(data["mapping"]) == 4
+    assert len(data["characters"]) == 2
+
+
+def test_chapters_must_cover_active_mapping_in_order(client):
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    assert (
+        _patch_breakdown(
+            client, story_id, mapping=_mapping_items([1, 2, 3, 4])
+        ).status_code
+        == 200
+    )
+
+    # 漏段
+    response = _patch_breakdown(
+        client,
+        story_id,
+        chapters=[_chapter_payload(1, [1, 2]), _chapter_payload(2, [3])],
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "CHAPTER_COVERAGE_INVALID"
+
+    # 跳段 / 倒序
+    response = _patch_breakdown(
+        client,
+        story_id,
+        chapters=[_chapter_payload(1, [1, 2]), _chapter_payload(2, [4, 3])],
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "CHAPTER_COVERAGE_INVALID"
+
+    # 章节号必须连续
+    response = _patch_breakdown(
+        client,
+        story_id,
+        chapters=[_chapter_payload(1, [1, 2]), _chapter_payload(3, [3, 4])],
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "CHAPTER_NUMBER_INVALID"
+
+
+def test_chapters_skip_excluded_mapping(client):
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    assert (
+        _patch_breakdown(
+            client,
+            story_id,
+            mapping=_mapping_items([1, 2, 3], excluded={2}),
+        ).status_code
+        == 200
+    )
+
+    # 弃用段不能分入章节
+    response = _patch_breakdown(
+        client,
+        story_id,
+        chapters=[_chapter_payload(1, [1]), _chapter_payload(2, [2, 3])],
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "CHAPTER_USES_EXCLUDED_PAGE"
+
+    # 跳过弃用段后必须完整覆盖剩余段
+    response = _patch_breakdown(
+        client,
+        story_id,
+        chapters=[_chapter_payload(1, [1]), _chapter_payload(2, [3])],
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_mapping_change_requires_chapter_update(client):
+    """对照表变了但章节未同步时拒绝写入，避免章节漏段/错位。"""
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    assert (
+        _patch_breakdown(
+            client, story_id, mapping=_mapping_items([1, 2, 3])
+        ).status_code
+        == 200
+    )
+    assert (
+        _patch_breakdown(
+            client,
+            story_id,
+            chapters=[_chapter_payload(1, [1, 2]), _chapter_payload(2, [3])],
+        ).status_code
+        == 200
+    )
+
+    response = _patch_breakdown(
+        client, story_id, mapping=_mapping_items([1, 2, 3, 4])
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "CHAPTER_COVERAGE_INVALID"
+
+
+def test_page_chapter_fields_round_trip_and_validation(client):
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    assert (
+        _patch_breakdown(
+            client, story_id, mapping=_mapping_items([1, 2, 3, 4])
+        ).status_code
+        == 200
+    )
+    assert (
+        _patch_breakdown(
+            client,
+            story_id,
+            chapters=[
+                _chapter_payload(1, [1, 2]),
+                _chapter_payload(2, [3, 4]),
+            ],
+        ).status_code
+        == 200
+    )
+
+    response = _put_page(
+        client,
+        story_id,
+        1,
+        mapping_page_number=1,
+        chapter_number=1,
+        chapter_page_number=1,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["chapter_number"] == 1
+    assert response.json()["chapter_page_number"] == 1
+    assert response.json()["display_page_number"] == 1
+
+    # 章内页与来源对照段必须匹配（第 1 章第 2 页应对应对照第 2 段）
+    response = _put_page(
+        client,
+        story_id,
+        2,
+        mapping_page_number=3,
+        chapter_number=1,
+        chapter_page_number=2,
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "CHAPTER_PAGE_MAPPING_MISMATCH"
+
+    # 全局页码必须由章节位置唯一确定（第 2 章第 2 页应为全局第 4 页）
+    response = _put_page(
+        client,
+        story_id,
+        5,
+        mapping_page_number=4,
+        chapter_number=2,
+        chapter_page_number=2,
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "CHAPTER_PAGE_NUMBER_MISMATCH"
+
+    assert (
+        _put_page(
+            client,
+            story_id,
+            2,
+            mapping_page_number=2,
+            chapter_number=1,
+            chapter_page_number=2,
+        ).status_code
+        == 200
+    )
+    response = _put_page(
+        client,
+        story_id,
+        3,
+        mapping_page_number=3,
+        chapter_number=2,
+        chapter_page_number=1,
+    )
+    assert response.status_code == 200
+    assert response.json()["display_page_number"] == 1
+
+    breakdown = client.get(f"/api/stories/{story_id}/breakdown").json()
+    page3 = next(
+        item for item in breakdown["pages"] if item["page_number"] == 3
+    )
+    assert page3["chapter_page_number"] == 1
+    assert page3["display_page_number"] == 1
+    assert (
+        _put_page(
+            client,
+            story_id,
+            4,
+            mapping_page_number=4,
+            chapter_number=2,
+            chapter_page_number=2,
+        ).status_code
+        == 200
+    )
+
+    # 只改章节标题 / 封面文字时，已有页面不受影响，允许保存
+    response = _patch_breakdown(
+        client,
+        story_id,
+        chapters=[
+            _chapter_payload(1, [1, 2], title="新的第一章"),
+            _chapter_payload(2, [3, 4]),
+        ],
+    )
+    assert response.status_code == 200, response.text
+
+    # 章节结构变化会改变页面归属，已有正文页时拒绝
+    response = _patch_breakdown(
+        client,
+        story_id,
+        chapters=[
+            _chapter_payload(1, [1, 2, 3]),
+            _chapter_payload(2, [4]),
+        ],
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "CHAPTERS_LOCKED_BY_PAGES"
+
+    # 对照表变化同样会改变来源，已有正文页时拒绝
+    response = _patch_breakdown(
+        client,
+        story_id,
+        mapping=_mapping_items([1, 2, 3, 4], excluded=(4,)),
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "MAPPING_LOCKED_BY_PAGES"
+
+    # 编辑时不带章节字段，保留原值
+    response = _put_page(client, story_id, 1, narration_main="改写后的主旁白")
+    assert response.status_code == 200
+    assert response.json()["chapter_number"] == 1
+    assert response.json()["chapter_page_number"] == 1
+
+    # 章节字段必须成对出现（新页，没有旧值可继承）
+    response = _put_page(client, story_id, 6, chapter_number=1)
+    assert response.status_code == 422
+    assert response.json()["code"] == "CHAPTER_PAGE_INCOMPLETE"
+
+
+def test_page_prompt_number_must_match_display_page(client):
+    """正文页提示词里的页码必须是章内页码，不能写全局页码或对照段号。"""
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    assert (
+        _patch_breakdown(
+            client, story_id, mapping=_mapping_items([1, 2, 3, 4])
+        ).status_code
+        == 200
+    )
+    assert (
+        _patch_breakdown(
+            client,
+            story_id,
+            chapters=[
+                _chapter_payload(1, [1, 2]),
+                _chapter_payload(2, [3, 4]),
+            ],
+        ).status_code
+        == 200
+    )
+
+    wrong = _put_page(
+        client,
+        story_id,
+        3,
+        mapping_page_number=3,
+        chapter_number=2,
+        chapter_page_number=1,
+        image_prompt=(
+            "【画风】测试画风\n"
+            "【页码】画面左下角放置「第17页」，不遮挡人物。\n"
+            "【负面提示词】测试。"
+        ),
+    )
+    assert wrong.status_code == 422
+    assert wrong.json()["code"] == "PROMPT_PAGE_MISMATCH"
+
+    ok = _put_page(
+        client,
+        story_id,
+        3,
+        mapping_page_number=3,
+        chapter_number=2,
+        chapter_page_number=1,
+        image_prompt=(
+            "【画风】测试画风\n"
+            "【页码】画面左下角放置「第1页」，不遮挡人物。\n"
+            "【负面提示词】测试。"
+        ),
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["display_page_number"] == 1
+
+    # 旧数据没有【页码】分块时保持兼容，不阻断编辑
+    legacy = _put_page(
+        client,
+        story_id,
+        3,
+        mapping_page_number=3,
+        chapter_number=2,
+        chapter_page_number=1,
+        image_prompt="旧提示词，没有页码分块。",
+    )
+    assert legacy.status_code == 200, legacy.text
 
 
 def test_patch_empty_payload_rejected(client):
@@ -236,6 +631,48 @@ def test_page_upsert_sorted_and_replaced(client):
     pages = client.get(f"/api/stories/{story_id}/breakdown").json()["pages"]
     assert len(pages) == 2
     assert pages[0]["narration_main"] == "改写后的首图提问"
+
+
+def test_page_mapping_page_number_round_trip(client):
+    """脚本页记录来源对照段；编辑时未传则保留，且一段不能关联两页。"""
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    mapping = [
+        {
+            "page_number": 1,
+            "source_text": "第一段原文",
+            "summary": "第一段",
+            "paragraph": "第1段",
+            "part": "1/1",
+        },
+        {
+            "page_number": 2,
+            "source_text": "第二段原文",
+            "summary": "第二段",
+            "paragraph": "第2段",
+            "part": "1/1",
+        },
+    ]
+    assert _patch_breakdown(client, story_id, mapping=mapping).status_code == 200
+
+    response = _put_page(client, story_id, 1, mapping_page_number=2)
+    assert response.status_code == 200, response.text
+    assert response.json()["mapping_page_number"] == 2
+
+    # 编辑页面时不携带来源段，沿用原关联
+    response = _put_page(client, story_id, 1, narration_main="改写后的主旁白")
+    assert response.status_code == 200, response.text
+    assert response.json()["mapping_page_number"] == 2
+
+    # 同一对照段不能关联到两个脚本页
+    response = _put_page(client, story_id, 2, mapping_page_number=2)
+    assert response.status_code == 422
+    assert response.json()["code"] == "MAPPING_PAGE_DUPLICATED"
+
+    # 对照表里不存在的段不能作为来源
+    response = _put_page(client, story_id, 2, mapping_page_number=99)
+    assert response.status_code == 422
+    assert response.json()["code"] == "MAPPING_PAGE_NOT_FOUND"
 
 
 def test_page_role_saved_and_optional(client):

@@ -57,6 +57,26 @@ def apply_schema_migrations(engine: Engine) -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE stories ADD COLUMN art_style_id VARCHAR(64)"
             )
+        # 知乎推广信息：原文标题 / 原文 ID / 搜索别名
+        if columns and "zhihu_title" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN zhihu_title VARCHAR(300) "
+                "NOT NULL DEFAULT ''"
+            )
+        if columns and "zhihu_article_id" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN zhihu_article_id VARCHAR(64) "
+                "NOT NULL DEFAULT ''"
+            )
+        if columns and "zhihu_alias" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN zhihu_alias VARCHAR(8) "
+                "NOT NULL DEFAULT ''"
+            )
+        if columns and "zhihu_aliases" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN zhihu_aliases JSON"
+            )
 
         # AI 改动解读的持久化缓存（原文 / 优化文未变时不再调用模型）
         breakdown_columns = {
@@ -75,6 +95,16 @@ def apply_schema_migrations(engine: Engine) -> None:
         ):
             connection.exec_driver_sql(
                 "ALTER TABLE story_breakdowns ADD COLUMN analysis_input_hash VARCHAR(64)"
+            )
+        # 两步拆解的分镜对照表：第一步写 mapping，第二步据此生成 pages
+        if breakdown_columns and "mapping" not in breakdown_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE story_breakdowns ADD COLUMN mapping JSON"
+            )
+        # 章节发布分组：封面 + 正文 + 引导卡
+        if breakdown_columns and "chapters" not in breakdown_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE story_breakdowns ADD COLUMN chapters JSON"
             )
 
 

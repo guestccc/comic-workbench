@@ -14,6 +14,28 @@ export interface PromptSection {
   text: string
 }
 
+/** 旁白三字段：标红词必须内嵌在它所在的那一句里，不能单独成行。 */
+export interface NarrationFields {
+  main: string
+  highlight?: string
+  sub: string
+}
+
+/** 标红词在旁白中的位置；找不到时为 null。 */
+export interface HighlightLocation {
+  block: 'main' | 'sub'
+  position: '句首' | '句中' | '句尾' | '整句'
+}
+
+/** 解析 / 复制提示词时可补充的上下文。 */
+export interface ImagePromptContext {
+  dialogues?: string[]
+  cameraAngle?: string
+  narration?: NarrationFields
+  /** 当前脚本页码：用于把旧提示词里写死的「第X页」改成重编号后的页码 */
+  pageNumber?: number
+}
+
 /** 新格式允许的分类名，用于识别「画风：…」这类行首标签。 */
 const KNOWN_LABELS = [
   '画风',
@@ -71,37 +93,256 @@ function parseLabeledPrompt(prompt: string): PromptSection[] | null {
   return sections.length > 0 ? sections : null
 }
 
-/**
- * 把旧格式「文字区」的一长句拆成多行小标题。
- *
- * 旧数据形如：
- * 顶部预留…文字区域：上方大字体主要旁白「…」，旁白字体加红加粗「…」，
- * 下方小号字体副旁白「…」；文字留白区纯净无杂色底纹…
- *
- * 新数据本身已经按小标题分行，匹配不到「」引文时原样返回。
- */
-function formatTextArea(text: string): string {
-  const main = text.match(/主要旁白「([^」]*)」/)
-  const keyword = text.match(/关键词「([^」]*)」/)
-  const sub = text.match(/副旁白「([^」]*)」/)
-  if (!main || !sub) return text
+/** 文字区固定顶部说明：标红内嵌在旁白行内，不再单独描述文字块数量。 */
+const TEXT_AREA_TOP =
+  '顶部留白：画面上方预留大面积纯净白色留白（不铺纸纹、无泛黄底色）。'
 
-  const headerEnd = text.search(/上方大字体主要旁白|主要旁白「/)
-  const header =
-    headerEnd > 0 ? text.slice(0, headerEnd).trim().replace(/[：:]\s*$/, '') : ''
-  const subEnd = (sub.index ?? 0) + sub[0].length
-  const tail = text
-    .slice(subEnd)
-    .replace(/^[；;，,。\s]+/, '')
+/** 旧提示词里文字区的小标题；用于把一个字段截到下一个字段之前。 */
+const TEXT_AREA_LABELS =
+  '(?:顶部留白|主要旁白|主旁白|旁白字体加红加粗|标红关键词|副旁白|对话气泡|明确禁止|绝对禁止)'
+
+const MAIN_NARRATION_LABEL = '(?:主要旁白|主旁白)'
+const SUB_NARRATION_LABEL = '副旁白'
+const HIGHLIGHT_LABEL = '(?:旁白字体加红加粗|标红关键词)'
+
+const CHINESE_NUMERALS = [
+  '零',
+  '一',
+  '二',
+  '三',
+  '四',
+  '五',
+  '六',
+  '七',
+  '八',
+  '九',
+  '十',
+]
+
+/** 去掉字段值两侧的引号与分隔符；保留句末标点，避免旁白丢句号。 */
+function cleanFieldValue(raw: string): string {
+  return raw
     .trim()
+    .replace(/^[「『"]\s*/, '')
+    .replace(/\s*[」』"]$/, '')
+    .replace(/[；;，,\s]+$/, '')
+}
 
-  const lines: string[] = []
-  const intro = [header, tail].filter(Boolean).join('；')
-  if (intro) lines.push(intro)
-  lines.push(`主要旁白：「${main[1]}」`)
-  if (keyword) lines.push(`旁白字体加红加粗：「${keyword[1]}」`)
-  lines.push(`副旁白：「${sub[1]}」`)
+/** 从旧文字区里按「标签：内容」截取一个字段。 */
+function extractLabeledField(text: string, labelPattern: string): string | null {
+  const matched = new RegExp(`${labelPattern}\\s*[：:]\\s*`).exec(text)
+  if (!matched) return null
+
+  const rest = text.slice(matched.index + matched[0].length)
+  const next = new RegExp(
+    `[；;\\n]?\\s*(?:[①②③④⑤⑥⑦⑧⑨⑩]\\s*)?${TEXT_AREA_LABELS}\\s*[：:]`,
+  ).exec(rest)
+  const raw = (next ? rest.slice(0, next.index) : rest).trim()
+  return cleanFieldValue(raw)
+}
+
+/** 兼容「主要旁白「…」」这种标签后直接跟引号的旧写法。 */
+function extractQuotedField(text: string, labelPattern: string): string | null {
+  const matched = new RegExp(
+    `${labelPattern}\\s*[：:]?\\s*「([^」]*)」`,
+  ).exec(text)
+  return matched ? cleanFieldValue(matched[1]) : null
+}
+
+/** 从旧提示词的文字区里识别旁白三字段；识别失败返回 null。 */
+function extractLegacyNarration(text: string): NarrationFields | null {
+  // 已经是新模板时原样保留，避免把主旁白 / 绝对禁止当成旧字段再切一次
+  if (text.includes('绝对禁止：')) {
+    return null
+  }
+
+  const main =
+    extractLabeledField(text, MAIN_NARRATION_LABEL) ??
+    extractQuotedField(text, MAIN_NARRATION_LABEL)
+  const sub =
+    extractLabeledField(text, SUB_NARRATION_LABEL) ??
+    extractQuotedField(text, SUB_NARRATION_LABEL)
+  if (!main || !sub) return null
+
+  const highlight =
+    extractLabeledField(text, HIGHLIGHT_LABEL) ??
+    extractQuotedField(text, HIGHLIGHT_LABEL) ??
+    ''
+  return { main, sub, highlight }
+}
+
+/** 标红词在句中的位置描述。 */
+function describePosition(
+  index: number,
+  length: number,
+  total: number,
+): HighlightLocation['position'] {
+  if (index === 0 && length >= total) return '整句'
+  if (index === 0) return '句首'
+  if (index + length >= total) return '句尾'
+  return '句中'
+}
+
+/** 标红词的字数描述，例如「二字」「3 个字」。 */
+function characterCountLabel(count: number): string {
+  return count >= 1 && count <= 10
+    ? `${CHINESE_NUMERALS[count]}字`
+    : `${count} 个字`
+}
+
+/** 标红词在同一句里出现的次数，用于提醒模型不要全部标红。 */
+function countOccurrences(text: string, word: string): number {
+  return word ? text.split(word).length - 1 : 0
+}
+
+/**
+ * 定位标红关键词：先找主要旁白，再找副旁白。
+ * 找不到时返回 null，生图提示词按「本页无红色文字」处理。
+ */
+export function locateNarrationHighlight(
+  narration: NarrationFields,
+): HighlightLocation | null {
+  const highlight = (narration.highlight ?? '').trim()
+  if (!highlight) return null
+
+  const main = narration.main.trim()
+  const sub = narration.sub.trim()
+  const length = highlight.length
+
+  const mainIndex = main.indexOf(highlight)
+  if (mainIndex >= 0) {
+    return {
+      block: 'main',
+      position: describePosition(mainIndex, length, main.length),
+    }
+  }
+
+  const subIndex = sub.indexOf(highlight)
+  if (subIndex >= 0) {
+    return {
+      block: 'sub',
+      position: describePosition(subIndex, length, sub.length),
+    }
+  }
+
+  return null
+}
+
+/**
+ * 生成【文字区】正文。
+ *
+ * 顺序固定为「顶部留白 → 主旁白 →（绝对禁止）→ 副旁白 →（绝对禁止）→ 对话气泡」。
+ * 绝对禁止紧跟标红所在的那一行；没有标红时放在副旁白之后。
+ * 标红词必须内嵌在它所在的那一行，找不到时整页按全黑处理，
+ * 绝不把不存在的词写进提示词。
+ */
+function buildNarrationTextArea(
+  narration: NarrationFields,
+  entries: DialogueEntry[],
+): string {
+  const main = narration.main.trim()
+  const sub = narration.sub.trim()
+  const highlight = (narration.highlight ?? '').trim()
+  const location = locateNarrationHighlight(narration)
+  const count = highlight ? characterCountLabel(highlight.length) : ''
+  const lines: string[] = [TEXT_AREA_TOP]
+
+  // 副旁白允许 1–2 行：换行符是给生图模型的排版信号，不能丢。
+  const subLines = sub
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const twoLineSub = subLines.length > 1
+  const subInstruction = twoLineSub
+    ? `写两行较小的黑色手写体：第一行「${subLines[0]}」，第二行「${subLines
+        .slice(1)
+        .join('')}」`
+    : `写一行较小的黑色手写体「${sub}」`
+  const subFidelity = twoLineSub
+    ? '副旁白文字须按给出的两行逐字呈现、不得改写、不得合并成一行、不得替换姓名。'
+    : '副旁白文字须逐字呈现、不得改写、不得按语义自行断行、不得替换姓名。'
+
+  if (location?.block === 'main') {
+    const repeat =
+      countOccurrences(main, highlight) > 1
+        ? '；文中其他位置的同一词同样保持黑色，不得标红'
+        : ''
+    lines.push(
+      `主旁白：只写一行完整的黑色手写体「${main}」，其中仅${location.position}「${highlight}」${count}为红色手写加粗（红色、笔画比其余字粗），其余文字保持黑色不加粗${repeat}。`,
+    )
+    lines.push(
+      `绝对禁止：不得在主旁白下方或任何位置单独另起一行书写「${highlight}」${count}，除主旁白外不得出现任何其他红色文字，这一行之下不再写第二行相同文字。`,
+    )
+  } else {
+    lines.push(
+      `主旁白：只写一行完整的黑色手写体「${main}」，全部文字保持黑色不加粗。`,
+    )
+  }
+
+  if (location?.block === 'sub') {
+    const repeat =
+      countOccurrences(sub, highlight) > 1
+        ? '；文中其他位置的同一词同样保持黑色，不得标红'
+        : ''
+    const highlightPlace = twoLineSub ? '' : location.position
+    lines.push(
+      `副旁白：紧接主旁白下方，${subInstruction}，其中仅${highlightPlace}「${highlight}」${count}为红色手写加粗（红色、笔画比其余字粗），其余文字保持黑色不加粗${repeat}；${subFidelity}`,
+    )
+    lines.push(
+      `绝对禁止：不得在副旁白下方或任何位置单独另起一行书写「${highlight}」${count}，除副旁白外不得出现任何其他红色文字，这一行之下不再写第二行相同文字。`,
+    )
+  } else {
+    lines.push(
+      `副旁白：紧接主旁白下方，${subInstruction}，${subFidelity}`,
+    )
+  }
+
+  if (!location) {
+    lines.push(
+      '绝对禁止：本页旁白文字全部保持黑色不加粗，不得出现任何红色文字，不得另起一行重复书写旁白中的任何文字。',
+    )
+  }
+
+  if (entries.length > 0) lines.push(formatDialogueBlock(entries))
+
   return lines.join('\n')
+}
+
+/** 新生成的文字区优先，但保留旧文字的旁白字段作为兜底。 */
+function resolveNarration(
+  narration: NarrationFields | undefined,
+  sections: PromptSection[],
+): NarrationFields | null {
+  if (narration?.main.trim() && narration.sub.trim()) {
+    return {
+      main: narration.main.trim(),
+      sub: narration.sub.trim(),
+      highlight: (narration.highlight ?? '').trim(),
+    }
+  }
+
+  const textArea = sections.find((section) => section.label === '文字区')
+  return textArea ? extractLegacyNarration(textArea.text) : null
+}
+
+/** 用新生成的文字区替换原分块；没有文字区时插在页码 / 负面词之前。 */
+function replaceTextArea(
+  sections: PromptSection[],
+  text: string,
+): PromptSection[] {
+  const block: PromptSection = { label: '文字区', text }
+  const index = sections.findIndex((section) => section.label === '文字区')
+  if (index >= 0) {
+    return sections.map((section, position) =>
+      position === index ? block : section,
+    )
+  }
+
+  const insertAt = sections.findIndex(
+    (section) => section.label === '页码' || section.label === '负面提示词',
+  )
+  if (insertAt === -1) return [...sections, block]
+  return [...sections.slice(0, insertAt), block, ...sections.slice(insertAt)]
 }
 
 /** 解析旧格式的一整段提示词：按固定关键词切成分类。 */
@@ -228,6 +469,51 @@ function formatDialogueBlock(entries: DialogueEntry[]): string {
   return `对话气泡（${DIALOGUE_NOTE}）：\n${lines.join('\n')}`
 }
 
+/** 解析提示词里已有的对话气泡条目（兼容新旧两种写法）。 */
+function parseDialogueEntries(text: string): DialogueEntry[] {
+  const start = text.indexOf('对话气泡')
+  if (start === -1) return []
+
+  const tail = text.slice(start)
+  const structured: DialogueEntry[] = []
+  for (const matched of tail.matchAll(
+    /气泡文字[：:]\s*([^｜|\n]+?)\s*(?:｜|\|)\s*说话人[：:]\s*([^｜|\n]*?)\s*(?:｜|\|)\s*气泡位置[：:]\s*([^\n]+)/g,
+  )) {
+    structured.push({
+      text: matched[1].trim(),
+      speaker: matched[2].trim(),
+      position:
+        trimBubblePosition(matched[3]) || DEFAULT_BUBBLE_POSITION,
+    })
+  }
+  if (structured.length > 0) return structured
+
+  // 旧写法：「对话气泡：说话人「台词」，位置」
+  return tail
+    .split(/对话气泡(?:（[^）]*）)?[：:]/)
+    .slice(1)
+    .map(parsePromptDialogue)
+    .filter((entry): entry is DialogueEntry => entry !== null)
+}
+
+/** 提示词里的气泡位置优先；缺失条目用脚本 dialogues 补齐。 */
+function collectDialogueEntries(
+  text: string,
+  dialogues: string[],
+): DialogueEntry[] {
+  const fromPrompt = parseDialogueEntries(text)
+  const fromScript = dialogues
+    .map(parseDialogueLine)
+    .filter((entry): entry is DialogueEntry => entry !== null)
+
+  if (fromPrompt.length === 0) return fromScript
+  const entries = [...fromPrompt]
+  for (let index = entries.length; index < fromScript.length; index += 1) {
+    entries.push(fromScript[index])
+  }
+  return entries
+}
+
 /**
  * 把分块里旧的对话气泡改写成新格式，保留原有气泡位置。
  *
@@ -246,19 +532,7 @@ function rewriteDialoguesInText(
     .slice(0, start)
     .trim()
     .replace(/[；;，,\s]+$/, '')
-  const chunks = text.slice(start).split(/对话气泡[：:]/).slice(1)
-  const fromPrompt = chunks
-    .map(parsePromptDialogue)
-    .filter((entry): entry is DialogueEntry => entry !== null)
-  const fromScript = dialogues
-    .map(parseDialogueLine)
-    .filter((entry): entry is DialogueEntry => entry !== null)
-
-  // 以提示词里的条目为准（保留手写的气泡位置），再用脚本 dialogues 补齐缺漏
-  const entries = fromPrompt.length > 0 ? [...fromPrompt] : []
-  for (let index = entries.length; index < fromScript.length; index += 1) {
-    entries.push(fromScript[index])
-  }
+  const entries = collectDialogueEntries(text, dialogues)
   if (entries.length === 0) return prefix || null
 
   const block = formatDialogueBlock(entries)
@@ -348,15 +622,50 @@ function appendCameraAngle(
 }
 
 /**
+ * 用当前脚本页码重写【页码】分块。
+ *
+ * 重新编号后，旧提示词里可能还写着「第8页」；展示和复制都以当前页码为准。
+ * 没有页码分块时补一个标准分块，避免生图时漏页码。
+ */
+function rewritePageNumber(
+  sections: PromptSection[],
+  pageNumber: number | undefined,
+): PromptSection[] {
+  if (!pageNumber || pageNumber <= 0) return sections
+
+  const index = sections.findIndex((section) => section.label === '页码')
+  if (index >= 0) {
+    const text = sections[index].text.replace(
+      /第\s*\d+\s*页/g,
+      `第${pageNumber}页`,
+    )
+    return sections.map((section, position) =>
+      position === index ? { ...section, text } : section,
+    )
+  }
+
+  const block: PromptSection = {
+    label: '页码',
+    text: `画面左下角放置小巧浅灰手写页码「第${pageNumber}页」，不遮挡人物与场景。`,
+  }
+  const insertAt = sections.findIndex(
+    (section) => section.label === '负面提示词',
+  )
+  if (insertAt === -1) return [...sections, block]
+  return [...sections.slice(0, insertAt), block, ...sections.slice(insertAt)]
+}
+
+/**
  * 把提示词解析为分类列表，供详情页分块展示。
  *
- * dialogues 传入脚本的对话气泡数组：旧拆解把说话人写进气泡时统一改写，
- * 提示词缺失对话气泡时自动补上；cameraAngle 缺失时同样自动补上。
+ * 只要拿到旁白三字段，就用它们整体重建【文字区】：
+ * 标红词内嵌在所在的那一句里，旧提示词里的「旁白字体加红加粗」单独行会被丢弃。
+ * 没有旁白字段时退回从旧文字区里识别；再失败则原样展示。
+ * dialogues 用于补齐 / 规范对话气泡，cameraAngle 缺失时自动补上。
  */
 export function parseImagePrompt(
   prompt: string,
-  dialogues: string[] = [],
-  cameraAngle: string = '',
+  context: ImagePromptContext = {},
 ): PromptSection[] {
   if (!prompt.trim()) return []
 
@@ -371,14 +680,26 @@ export function parseImagePrompt(
     ]
   }
 
-  const formatted = sections.map((section) =>
-    section.label === '文字区'
-      ? { ...section, text: formatTextArea(section.text) }
-      : section,
-  )
-  return normalizeDialogues(
-    appendCameraAngle(formatted, prompt, cameraAngle),
-    dialogues,
+  const narration = resolveNarration(context.narration, sections)
+  if (narration) {
+    const existingText =
+      sections.find((section) => section.label === '文字区')?.text ?? ''
+    const entries = collectDialogueEntries(
+      existingText,
+      context.dialogues ?? [],
+    )
+    sections = replaceTextArea(
+      sections,
+      buildNarrationTextArea(narration, entries),
+    )
+  }
+
+  return rewritePageNumber(
+    normalizeDialogues(
+      appendCameraAngle(sections, prompt, context.cameraAngle ?? ''),
+      context.dialogues ?? [],
+    ),
+    context.pageNumber,
   )
 }
 
@@ -387,16 +708,18 @@ export function parseImagePrompt(
  *
  * 首行固定为【第x页】，末行固定为「麻烦帮我生图」，
  * 生图 AI 据此识别页码并确认这是生图请求。
- * dialogues / cameraAngle 同 parseImagePrompt，用于补齐旧拆解缺失的对话气泡与机位。
+ *
+ * 页码只从 context.pageNumber 读取，不再单独接收一个页码参数，
+ * 避免展示用的是章内页码、复制时却传成全局页码。
  */
 export function formatImagePrompt(
   prompt: string,
-  pageNumber: number,
-  dialogues: string[] = [],
-  cameraAngle: string = '',
+  context: ImagePromptContext = {},
 ): string {
-  const body = parseImagePrompt(prompt, dialogues, cameraAngle)
+  const body = parseImagePrompt(prompt, context)
     .map((section) => `【${section.label}】${section.text}`)
     .join('\n\n')
-  return `【第${pageNumber}页】\n\n${body}\n\n麻烦帮我生图`
+  const pageNumber = context.pageNumber
+  const header = pageNumber ? `【第${pageNumber}页】\n\n` : ''
+  return `${header}${body}\n\n麻烦帮我生图`
 }

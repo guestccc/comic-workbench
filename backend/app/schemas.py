@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -16,6 +17,7 @@ from pydantic import (
 )
 
 from .config import (
+    CHARACTER_ASSET_FILENAME_PATTERN,
     MAX_API_KEY_LENGTH,
     MAX_ART_STYLES,
     MAX_ART_STYLE_CONTENT_LENGTH,
@@ -28,9 +30,16 @@ from .config import (
     MAX_CHARACTER_GROUP_PROMPT_LENGTH,
     MAX_CHARACTER_NAME_LENGTH,
     MAX_CHARACTER_ROLE_LENGTH,
+    MAX_CHAPTERS,
+    MAX_CHAPTER_CONTENT_PAGES,
+    MAX_CHAPTER_GUIDE_SUB_TEXT_LENGTH,
+    MAX_CHAPTER_GUIDE_TEXT_LENGTH,
+    MAX_CHAPTER_LABEL_LENGTH,
+    MAX_CHAPTER_TITLE_LENGTH,
     MAX_COPY_OPTION_FEATURE_LENGTH,
     MAX_COPY_OPTION_REASON_LENGTH,
     MAX_COPY_OPTION_STYLE_LENGTH,
+    MAX_IMAGE_PREFIX_PROMPT_LENGTH,
     MAX_PAGE_CAMERA_ANGLE_LENGTH,
     MAX_PAGE_CHARACTERS,
     MAX_PAGE_DIALOGUES,
@@ -52,6 +61,10 @@ from .config import (
     MAX_PROMPT_OPTIMIZE_TOTAL_CHARS,
     MAX_STORY_CONTENT_LENGTH,
     MAX_STORY_NAME_LENGTH,
+    MAX_ZHIHU_ALIASES,
+    MAX_ZHIHU_ALIAS_LENGTH,
+    MAX_ZHIHU_ARTICLE_ID_LENGTH,
+    MAX_ZHIHU_TITLE_LENGTH,
 )
 
 PostStatus = Literal["draft", "published"]
@@ -142,6 +155,8 @@ class SettingsRead(BaseModel):
     deepseek: DeepSeekStatus
     art_styles: list[ArtStyleItem] = Field(default_factory=list)
     active_art_style: str | None = None
+    # 生图前置提示词：全局生效，复制角色卡与分镜提示词时自动拼在开头
+    image_prefix_prompt: str = ""
 
     @field_serializer("prompt_updated_at")
     def _serialize_prompt_time(self, value: datetime | None) -> str | None:
@@ -158,6 +173,12 @@ class PromptUpdate(BaseModel):
         if not value:
             raise ValueError("启动提示词不能为空")
         return value
+
+
+class ImagePrefixPromptUpdate(BaseModel):
+    """保存全局生图前置提示词；允许为空，空值表示复制时不拼任何前置内容。"""
+
+    content: str = Field(max_length=MAX_IMAGE_PREFIX_PROMPT_LENGTH)
 
 
 class DeepSeekKeyUpdate(BaseModel):
@@ -374,6 +395,75 @@ class StoryUpdate(StoryCreate):
     """PUT 全量更新；cover_filename 传 null 表示清除封面。"""
 
 
+class StoryZhihuUpdate(BaseModel):
+    """更新故事级知乎推广信息；三个字段可单独留空。"""
+
+    zhihu_title: str = Field(default="", max_length=MAX_ZHIHU_TITLE_LENGTH)
+    zhihu_article_id: str = Field(
+        default="", max_length=MAX_ZHIHU_ARTICLE_ID_LENGTH
+    )
+    zhihu_alias: str = Field(default="", max_length=MAX_ZHIHU_ALIAS_LENGTH)
+    # 候选别名列表；最终使用哪个由 zhihu_alias 标注
+    zhihu_aliases: list[str] | None = Field(
+        default=None, max_length=MAX_ZHIHU_ALIASES
+    )
+
+    @field_validator("zhihu_title", "zhihu_article_id", "zhihu_alias")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("zhihu_article_id")
+    @classmethod
+    def _validate_article_id(cls, value: str) -> str:
+        if value and not re.fullmatch(r"\d{1,64}", value):
+            raise ValueError("知乎原文 ID 只能是数字")
+        return value
+
+    @field_validator("zhihu_alias")
+    @classmethod
+    def _validate_alias(cls, value: str) -> str:
+        if value and not re.fullmatch(r"[一-鿿]{6,8}", value):
+            raise ValueError("别名必须是 6–8 个汉字，不能包含字母、数字、标点或空格")
+        return value
+
+    @field_validator("zhihu_aliases")
+    @classmethod
+    def _clean_aliases(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        cleaned: list[str] = []
+        for value in values:
+            value = value.strip()
+            if not value:
+                continue
+            if len(value) > MAX_ZHIHU_ALIAS_LENGTH:
+                raise ValueError(
+                    f"单个别名不能超过 {MAX_ZHIHU_ALIAS_LENGTH} 个汉字"
+                )
+            if value not in cleaned:
+                cleaned.append(value)
+        return cleaned
+
+
+class ZhihuAliasSuggestRequest(BaseModel):
+    """可选传入尚未保存的原文标题，方便先在弹窗里生成候选。"""
+
+    title: str | None = Field(default=None, max_length=MAX_ZHIHU_TITLE_LENGTH)
+
+    @field_validator("title")
+    @classmethod
+    def _strip_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class ZhihuAliasSuggestionsRead(BaseModel):
+    aliases: list[str]
+
+
 class StoryRead(_TimestampMixin):
     model_config = ConfigDict(from_attributes=True)
 
@@ -386,6 +476,11 @@ class StoryRead(_TimestampMixin):
     # 从画风列表中解析出的名称与描述；画风不存在（已删除）时为 None
     art_style_name: str | None = None
     art_style_content: str | None = None
+    # 知乎推广信息：原文标题 / 原文 ID / 在知乎注册的搜索别名
+    zhihu_title: str = ""
+    zhihu_article_id: str = ""
+    zhihu_alias: str = ""
+    zhihu_aliases: list[str] = Field(default_factory=list)
 
 
 class UploadRead(BaseModel):
@@ -408,6 +503,8 @@ class CharacterCard(BaseModel):
     appearance: str = Field(
         min_length=1, max_length=MAX_CHARACTER_APPEARANCE_LENGTH
     )
+    # 角色资产图文件名（服务端生成，仅本地存档）；与角色名解耦，改名不丢图
+    asset_filename: str | None = Field(default=None, max_length=64)
 
     @field_validator("name", "appearance")
     @classmethod
@@ -422,10 +519,38 @@ class CharacterCard(BaseModel):
     def _strip_optional(cls, value: str) -> str:
         return value.strip()
 
+    @field_validator("asset_filename")
+    @classmethod
+    def _validate_asset_filename(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if not CHARACTER_ASSET_FILENAME_PATTERN.fullmatch(value):
+            raise ValueError("角色资产图文件名不合法")
+        return value
+
+
+class CharacterCardRead(CharacterCard):
+    """角色卡读取模型：额外带上资产图访问地址（不接受写入）。"""
+
+    asset_url: str | None = None
+
 
 class StoryboardPagePayload(BaseModel):
     """单页分镜的写入内容；页码由 URL 提供，不放在请求体里。"""
 
+    # 来源对照段号：本页由 mapping 的哪一段生成。
+    # 旧数据可能没有该字段；写入时未提供则保留原值。
+    mapping_page_number: int | None = Field(
+        default=None, ge=1, le=MAX_BREAKDOWN_PAGES
+    )
+    # 所属章节与章内页码；未启用章节的旧数据为空。
+    chapter_number: int | None = Field(default=None, ge=1, le=MAX_CHAPTERS)
+    chapter_page_number: int | None = Field(
+        default=None, ge=1, le=MAX_CHAPTER_CONTENT_PAGES
+    )
     is_flashback: bool = False
     # 本页在故事中的作用，例如「钩子封面」「铺垫」「冲突」「反转」「爆点」「情绪高潮」「收尾」
     page_role: str = Field(default="", max_length=MAX_PAGE_ROLE_LENGTH)
@@ -511,8 +636,129 @@ class StoryboardPagePayload(BaseModel):
 
 class StoryboardPageRead(StoryboardPagePayload):
     page_number: int = Field(ge=1, le=MAX_BREAKDOWN_PAGES)
+    # 图片上显示的页码：有章内页码时用章内页码，否则回退全局页码。
+    # 由服务端计算，不接受写入，避免前端/复制/导出各自推导。
+    display_page_number: int | None = Field(default=None, ge=1)
     # 成品图访问地址；有图即视为该页已完成。由服务端按文件是否存在计算，不接受写入
     image_url: str | None = None
+
+
+class StoryboardMappingItem(BaseModel):
+    """分镜对照表的一行：第几页对应优化文的哪一段。"""
+
+    page_number: int = Field(ge=1, le=MAX_BREAKDOWN_PAGES)
+    # 该页对应的优化文原文摘录，必须按原文顺序连续
+    source_text: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    # 给对照表看的一句话简述，不是最终副旁白
+    summary: str = Field(default="", max_length=MAX_PAGE_SHORT_TEXT_LENGTH)
+    # 例如「第3段」；part 例如「1/2」，便于定位拆分
+    paragraph: str = Field(default="", max_length=50)
+    part: str = Field(default="", max_length=20)
+    # 已弃用：保留在对照表里维持全文覆盖，但不再分入任何章节
+    excluded: bool = False
+
+    @field_validator("source_text")
+    @classmethod
+    def _strip_mapping_source(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("原文摘录不能为空")
+        return value
+
+    @field_validator("summary", "paragraph", "part")
+    @classmethod
+    def _strip_mapping_optional(cls, value: str) -> str:
+        return value.strip()
+
+
+class ChapterCover(BaseModel):
+    """章节封面：顶部小字 + 主旁白 + 副旁白 + 生图提示词。
+
+    主旁白 < 15 个汉字、副旁白 < 35 个汉字（标点不计）由前端自检把关；
+    这里只限制最大长度，允许先占位后补。
+    """
+
+    label: str = Field(default="", max_length=MAX_CHAPTER_LABEL_LENGTH)
+    narration_main: str = Field(default="", max_length=MAX_PAGE_SHORT_TEXT_LENGTH)
+    narration_highlight: str = Field(
+        default="", max_length=MAX_PAGE_HIGHLIGHT_LENGTH
+    )
+    narration_sub: str = Field(default="", max_length=MAX_PAGE_TEXT_LENGTH)
+    image_prompt: str = Field(
+        default="", max_length=MAX_PAGE_IMAGE_PROMPT_LENGTH
+    )
+
+    @field_validator(
+        "label",
+        "narration_main",
+        "narration_highlight",
+        "narration_sub",
+        "image_prompt",
+    )
+    @classmethod
+    def _strip_optional(cls, value: str) -> str:
+        return value.strip()
+
+
+class ChapterCoverRead(ChapterCover):
+    image_url: str | None = None
+
+
+class ChapterGuide(BaseModel):
+    """章节末尾引导卡：主文案 + 下一章预告 / 主页简介引导。"""
+
+    text: str = Field(default="", max_length=MAX_CHAPTER_GUIDE_TEXT_LENGTH)
+    sub_text: str = Field(
+        default="", max_length=MAX_CHAPTER_GUIDE_SUB_TEXT_LENGTH
+    )
+    image_prompt: str = Field(
+        default="", max_length=MAX_PAGE_IMAGE_PROMPT_LENGTH
+    )
+
+    @field_validator("text", "sub_text", "image_prompt")
+    @classmethod
+    def _strip_optional(cls, value: str) -> str:
+        return value.strip()
+
+
+class ChapterGuideRead(ChapterGuide):
+    image_url: str | None = None
+
+
+class StoryboardChapter(BaseModel):
+    """一章 = 一篇小红书笔记：1 封面 + 1..16 正文档 + 1 引导卡。"""
+
+    chapter_number: int = Field(ge=1, le=MAX_CHAPTERS)
+    title: str = Field(min_length=1, max_length=MAX_CHAPTER_TITLE_LENGTH)
+    # 本章使用的对照段号，必须按 mapping 顺序连续排列
+    mapping_page_numbers: list[int] = Field(
+        min_length=1, max_length=MAX_CHAPTER_CONTENT_PAGES
+    )
+    cover: ChapterCover = Field(default_factory=ChapterCover)
+    guide: ChapterGuide = Field(default_factory=ChapterGuide)
+
+    @field_validator("title")
+    @classmethod
+    def _strip_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("章节标题不能为空")
+        return value
+
+    @field_validator("mapping_page_numbers")
+    @classmethod
+    def _validate_mapping_pages(cls, values: list[int]) -> list[int]:
+        for value in values:
+            if value < 1 or value > MAX_BREAKDOWN_PAGES:
+                raise ValueError("对照段号超出范围")
+        if len(values) != len(set(values)):
+            raise ValueError("同一章内对照段号不能重复")
+        return values
+
+
+class StoryboardChapterRead(StoryboardChapter):
+    cover: ChapterCoverRead = Field(default_factory=ChapterCoverRead)
+    guide: ChapterGuideRead = Field(default_factory=ChapterGuideRead)
 
 
 class StoryBreakdownUpdate(BaseModel):
@@ -523,6 +769,14 @@ class StoryBreakdownUpdate(BaseModel):
     )
     characters: list[CharacterCard] | None = Field(
         default=None, max_length=MAX_CHARACTER_CARDS
+    )
+    # 两步拆解的第一步：分镜对照表；只写表，不写分镜页
+    mapping: list[StoryboardMappingItem] | None = Field(
+        default=None, max_length=MAX_BREAKDOWN_PAGES
+    )
+    # 章节发布分组：chapter 必须按对照表顺序覆盖全部未弃用段
+    chapters: list[StoryboardChapter] | None = Field(
+        default=None, max_length=MAX_CHAPTERS
     )
     # 旧流程字段，保留兼容；新流程不再写入人物合影提示词
     group_photo_prompt: str | None = Field(
@@ -551,6 +805,8 @@ class StoryBreakdownUpdate(BaseModel):
         if (
             self.optimized_content is None
             and self.characters is None
+            and self.mapping is None
+            and self.chapters is None
             and self.group_photo_prompt is None
         ):
             raise ValueError("没有需要更新的内容")
@@ -598,10 +854,14 @@ class StoryBreakdownRead(_TimestampMixin):
     id: int
     story_id: int
     optimized_content: str
-    characters: list[CharacterCard]
+    characters: list[CharacterCardRead]
     group_photo_prompt: str
     # 最终确认的人物合照访问地址；由服务端按文件是否存在计算，不接受写入
     group_photo_url: str | None = None
+    # 分镜对照表；两步拆解的第一步产物
+    mapping: list[StoryboardMappingItem]
+    # 章节发布分组；空列表表示未启用章节
+    chapters: list[StoryboardChapterRead] = Field(default_factory=list)
     pages: list[StoryboardPageRead]
     # 生成时使用的画风快照；画风被删除时仍保留旧值
     art_style_id: str | None = None
@@ -636,6 +896,16 @@ class StoryPostConfigUpdate(BaseModel):
 class StoryPostConfigRead(_TimestampMixin):
     id: int
     story_id: int
+    title: str
+    content: str
+
+
+class StoryChapterPostConfigRead(_TimestampMixin):
+    """一章一份的小红书文案；chapter_number 对应 breakdown.chapters。"""
+
+    id: int
+    story_id: int
+    chapter_number: int
     title: str
     content: str
 
@@ -687,6 +957,8 @@ class PostRead(_TimestampMixin):
 
 class GenerateRequest(BaseModel):
     story_id: int = Field(gt=0)
+    # 指定章节时只生成该章文案；为空时沿用旧版整篇故事生成
+    chapter_number: int | None = Field(default=None, ge=1, le=MAX_CHAPTERS)
 
 
 class GeneratedCopyOption(BaseModel):
@@ -712,4 +984,5 @@ class GeneratedCopyOptions(BaseModel):
 
 class GenerateResponse(BaseModel):
     story_id: int
+    chapter_number: int | None = None
     options: list[GeneratedCopyOption]

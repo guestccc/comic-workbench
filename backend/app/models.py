@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +24,9 @@ from .config import (
     MAX_POST_TITLE_LENGTH,
     MAX_STORY_CONTENT_LENGTH,
     MAX_STORY_NAME_LENGTH,
+    MAX_ZHIHU_ALIAS_LENGTH,
+    MAX_ZHIHU_ARTICLE_ID_LENGTH,
+    MAX_ZHIHU_TITLE_LENGTH,
 )
 
 
@@ -54,6 +58,20 @@ class Story(Base):
     # 引用画风列表（app_settings 中的 JSON）里的 id；画风被删除时允许悬空，
     # 读取时解析不到名称/描述，由前端提示重新选择。
     art_style_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 知乎推广信息：原文标题、原文 ID、在知乎注册的搜索别名
+    zhihu_title: Mapped[str] = mapped_column(
+        String(MAX_ZHIHU_TITLE_LENGTH), default="", nullable=False
+    )
+    zhihu_article_id: Mapped[str] = mapped_column(
+        String(MAX_ZHIHU_ARTICLE_ID_LENGTH), default="", nullable=False
+    )
+    zhihu_alias: Mapped[str] = mapped_column(
+        String(MAX_ZHIHU_ALIAS_LENGTH), default="", nullable=False
+    )
+    # 候选别名列表；用户在知乎注册多个时先保存，最终用 zhihu_alias 标注
+    zhihu_aliases: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -114,6 +132,10 @@ class StoryBreakdown(Base):
     # 旧流程的人物合影提示词；新流程不再生成，字段保留以兼容旧数据
     group_photo_prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
     pages: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    # 分镜对照表：页码 → 原文摘录。第一步只写这张表，第二步据此生成分镜页
+    mapping: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    # 章节 = 一篇小红书笔记：封面、正文对照段、引导卡。空列表表示未启用章节
+    chapters: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
     # 生成时的画风快照：故事之后换画风时据此提示「拆解已过期」
     art_style_id: Mapped[str | None] = mapped_column(
         String(MAX_ART_STYLE_ID_LENGTH), nullable=True
@@ -138,7 +160,11 @@ class StoryBreakdown(Base):
 
 
 class StoryPostConfig(Base):
-    """每个故事一份的小红书发文配置，与 posts 的多条发文记录互不影响。"""
+    """每个故事一份的旧版发文配置，与 posts 的多条发文记录互不影响。
+
+    启用章节后，每章文案写在 StoryChapterPostConfig；这里仅给没有章节的
+    老故事兜底。
+    """
 
     __tablename__ = "story_post_configs"
 
@@ -146,6 +172,39 @@ class StoryPostConfig(Base):
     story_id: Mapped[int] = mapped_column(
         ForeignKey("stories.id", ondelete="CASCADE"), nullable=False, unique=True
     )
+    title: Mapped[str] = mapped_column(
+        String(MAX_POST_TITLE_LENGTH), default="", nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class StoryChapterPostConfig(Base):
+    """一章一份的小红书发文配置，一章对应一篇笔记。"""
+
+    __tablename__ = "story_chapter_post_configs"
+    __table_args__ = (
+        UniqueConstraint(
+            "story_id",
+            "chapter_number",
+            name="uq_story_chapter_post_config",
+        ),
+        Index(
+            "ix_story_chapter_post_configs_story_id",
+            "story_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    story_id: Mapped[int] = mapped_column(
+        ForeignKey("stories.id", ondelete="CASCADE"), nullable=False
+    )
+    chapter_number: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(
         String(MAX_POST_TITLE_LENGTH), default="", nullable=False
     )

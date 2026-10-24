@@ -13,7 +13,7 @@ from ..crud import (
 )
 from ..database import get_db
 from ..errors import AppError
-from ..models import Post, Story
+from ..models import Post, Story, StoryBreakdown
 from ..schemas import (
     GenerateRequest,
     GenerateResponse,
@@ -22,7 +22,7 @@ from ..schemas import (
     PostStatus,
     PostUpdate,
 )
-from ..services.deepseek import generate_copy
+from ..services.deepseek import ChapterCopyContext, generate_copy
 
 router = APIRouter(prefix="/api/posts", tags=["发文"])
 
@@ -97,6 +97,94 @@ def generate_post_copy(
     # 先把所需数据取到局部变量，再结束读事务，外部 HTTP 调用期间不持有数据库事务
     story_name = story.name
     story_content = story.content
+    zhihu_alias = story.zhihu_alias or None
+    chapter_context: ChapterCopyContext | None = None
+
+    if payload.chapter_number is not None:
+        breakdown = db.scalar(
+            select(StoryBreakdown).where(
+                StoryBreakdown.story_id == payload.story_id
+            )
+        )
+        chapters = sorted(
+            (breakdown.chapters or []) if breakdown else [],
+            key=lambda item: item.get("chapter_number", 0),
+        )
+        if not chapters:
+            raise AppError(
+                404,
+                "该故事还没有章节规划，请先完成章节规划",
+                "CHAPTERS_NOT_FOUND",
+            )
+        chapter = next(
+            (
+                item
+                for item in chapters
+                if item.get("chapter_number") == payload.chapter_number
+            ),
+            None,
+        )
+        if chapter is None:
+            raise AppError(
+                404,
+                f"第 {payload.chapter_number} 章不存在",
+                "CHAPTER_NOT_FOUND",
+            )
+
+        mapping_by_number = {
+            item.get("page_number"): item.get("source_text", "")
+            for item in (breakdown.mapping or [])
+        }
+        chapter_text = "\n".join(
+            mapping_by_number[number]
+            for number in chapter.get("mapping_page_numbers", [])
+            if number in mapping_by_number
+        ).strip()
+        if not chapter_text:
+            raise AppError(
+                422,
+                f"第 {payload.chapter_number} 章没有可用的对照原文",
+                "CHAPTER_CONTENT_EMPTY",
+            )
+
+        previous_chapter = next(
+            (
+                item
+                for item in chapters
+                if item.get("chapter_number")
+                == payload.chapter_number - 1
+            ),
+            None,
+        )
+        previous_content = None
+        if previous_chapter is not None:
+            previous_content = "\n".join(
+                mapping_by_number[number]
+                for number in previous_chapter.get("mapping_page_numbers", [])
+                if number in mapping_by_number
+            ).strip() or None
+
+        next_chapter = next(
+            (
+                item
+                for item in chapters
+                if item.get("chapter_number")
+                == payload.chapter_number + 1
+            ),
+            None,
+        )
+        chapter_context = ChapterCopyContext(
+            chapter_number=payload.chapter_number,
+            chapter_title=chapter.get("title", ""),
+            chapter_count=len(chapters),
+            previous_content=previous_content,
+            next_chapter_title=(
+                next_chapter.get("title") if next_chapter else None
+            ),
+            is_last=next_chapter is None,
+        )
+        story_content = chapter_text
+
     start_prompt, _ = get_start_prompt(db)
     # 生成文案优先使用故事自己的画风，故事画风无效时回退全局当前画风
     styles, active_id = get_art_styles(db)
@@ -126,8 +214,14 @@ def generate_post_copy(
         story_content=story_content,
         art_style=art_style,
         art_style_name=art_style_name,
+        chapter=chapter_context,
+        zhihu_alias=zhihu_alias,
     )
-    return GenerateResponse(story_id=payload.story_id, options=options)
+    return GenerateResponse(
+        story_id=payload.story_id,
+        chapter_number=payload.chapter_number,
+        options=options,
+    )
 
 
 @router.get("/{post_id}", response_model=PostRead)

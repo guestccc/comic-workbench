@@ -15,7 +15,9 @@ from .config import (
     ACTIVE_ART_STYLE_KEY,
     ART_STYLES_KEY,
     DEEPSEEK_KEY,
+    DEFAULT_IMAGE_PREFIX_PROMPT,
     DEFAULT_START_PROMPT,
+    IMAGE_PREFIX_PROMPT_KEY,
     PROMPT_KEY,
 )
 from .models import Setting
@@ -50,6 +52,18 @@ def get_start_prompt(db: Session) -> tuple[str, Setting | None]:
     row = db.get(Setting, PROMPT_KEY)
     if row is None or not row.value.strip():
         return DEFAULT_START_PROMPT, None
+    return row.value, row
+
+
+def get_image_prefix_prompt(db: Session) -> tuple[str, Setting | None]:
+    """返回生图前置提示词及对应设置行（未保存过时返回默认规则）。
+
+    与启动提示词不同，这里允许保存为空字符串：用户想彻底关掉前置规则时，
+    空值代表「不拼任何内容」，而不是回退到默认值。
+    """
+    row = db.get(Setting, IMAGE_PREFIX_PROMPT_KEY)
+    if row is None:
+        return DEFAULT_IMAGE_PREFIX_PROMPT, None
     return row.value, row
 
 

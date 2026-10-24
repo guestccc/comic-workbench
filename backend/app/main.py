@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
 from .config import AppSettings
 from .database import (
@@ -16,7 +17,9 @@ from .database import (
     create_session_factory,
 )
 from .errors import register_exception_handlers
+from .models import StoryBreakdown
 from .routers import breakdowns, post_configs, posts, settings, stories, uploads
+from .services.files import organize_page_images
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +43,15 @@ def create_app(app_settings: AppSettings | None = None) -> FastAPI:
         app_settings.upload_dir.mkdir(parents=True, exist_ok=True)
         Base.metadata.create_all(bind=engine)
         apply_schema_migrations(engine)
+        # 一次性把旧版平铺的成品图归入章节目录；重复执行安全
+        with session_factory() as session:
+            for breakdown in session.scalars(select(StoryBreakdown)).all():
+                organize_page_images(
+                    app_settings.upload_dir,
+                    breakdown.story_id,
+                    breakdown.pages or [],
+                    breakdown.chapters or [],
+                )
         yield
         engine.dispose()
 

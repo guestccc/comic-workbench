@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Alert,
   App,
   Button,
   Card,
+  Collapse,
   Empty,
   Form,
   Input,
@@ -18,14 +19,20 @@ import { api, getErrorMessage } from '../api/client'
 import CharacterSyncModal from './CharacterSyncModal'
 import ImageUpload from './ImageUpload'
 import PromptOptimizerDrawer from './PromptOptimizerDrawer'
-import type { CharacterCard, StoryBreakdown } from '../types'
+import type { CharacterCard, SettingsData, StoryBreakdown } from '../types'
 import { CHARACTER_SYNC_INSTRUCTION } from '../utils/characterSync'
 import { copyText } from '../utils/clipboard'
+import { withImagePrefix } from '../utils/imagePrefix'
 
 interface CharacterCardsTabProps {
   breakdown: StoryBreakdown | null
   /** 是否已配置 DeepSeek Key，决定「AI 优化」是否可用 */
   aiEnabled: boolean
+  /** 全局生图前置提示词，复制角色卡时自动拼在开头 */
+  prefixPrompt: string
+  /** 当前故事的画风名称，用于替换前置提示词里的 {art_style_name} */
+  artStyleName: string | null
+  onPrefixSaved: (settings: SettingsData) => void
   onRefresh: () => Promise<void>
 }
 
@@ -56,10 +63,21 @@ function characterBinding(card: CharacterCard): string {
 export default function CharacterCardsTab({
   breakdown,
   aiEnabled,
+  prefixPrompt,
+  artStyleName,
+  onPrefixSaved,
   onRefresh,
 }: CharacterCardsTabProps) {
   const { message, modal } = App.useApp()
   const [form] = Form.useForm<CardFormValues>()
+
+  // 前置提示词编辑草稿；保存后由父组件回传的设置覆盖
+  const [prefixDraft, setPrefixDraft] = useState(prefixPrompt)
+  const [prefixSaving, setPrefixSaving] = useState(false)
+
+  useEffect(() => {
+    setPrefixDraft(prefixPrompt)
+  }, [prefixPrompt])
 
   const [cardOpen, setCardOpen] = useState(false)
   // -1 表示新增；否则为要替换的卡片下标
@@ -94,10 +112,14 @@ export default function CharacterCardsTab({
       return
     }
 
+    // 编辑卡片时保留已上传的资产图；删掉这行会导致每次改外形都丢图
+    const existing =
+      editingIndex >= 0 ? breakdown?.characters[editingIndex] : undefined
     const next: CharacterCard = {
       name: values.name.trim(),
       role: (values.role ?? '').trim(),
       appearance: values.appearance.trim(),
+      asset_filename: existing?.asset_filename ?? null,
     }
     // 替换或追加，随后整体写回 characters 数组
     const characters = [...breakdown.characters]
@@ -120,10 +142,67 @@ export default function CharacterCardsTab({
     }
   }
 
+  /**
+   * 保存全局生图前置提示词。
+   * 存在设置表里而不是某个故事上，所以以后新建的故事同样自动生效。
+   */
+  const handleSavePrefix = async () => {
+    setPrefixSaving(true)
+    try {
+      const data = await api.saveImagePrefixPrompt(prefixDraft)
+      onPrefixSaved(data)
+      setPrefixDraft(data.image_prefix_prompt)
+      message.success('前置提示词已保存，所有故事复制时都会自动带在开头')
+    } catch (error) {
+      message.error(getErrorMessage(error))
+    } finally {
+      setPrefixSaving(false)
+    }
+  }
+
+  /** 上传单个角色的资产图；只保存在本地，供展示与对照。 */
+  const handleUploadCharacterAsset = async (index: number, file: File) => {
+    if (!breakdown) return
+    try {
+      await api.uploadCharacterAsset(breakdown.story_id, index, file)
+      message.success('角色资产图已上传')
+      await onRefresh()
+    } catch (error) {
+      message.error(getErrorMessage(error))
+      // 抛出后由 ImageUpload 复位上传中状态
+      throw error
+    }
+  }
+
+  /** 删除单个角色的资产图。 */
+  const handleDeleteCharacterAsset = (index: number) => {
+    if (!breakdown) return
+    modal.confirm({
+      title: '删除这个角色的资产图？',
+      content: '只删除本地存档的图片，不影响角色卡与分镜。',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await api.deleteCharacterAsset(breakdown.story_id, index)
+          message.success('角色资产图已删除')
+          await onRefresh()
+        } catch (error) {
+          message.error(getErrorMessage(error))
+        }
+      },
+    })
+  }
+
+  /** 复制内容统一拼上当前输入框里的前置提示词（未保存也按所见复制）。 */
+  const withPrefix = (text: string) =>
+    withImagePrefix(prefixDraft, artStyleName, text)
+
   /** 复制单个角色的变量绑定，例如「{{我}}：28岁……」。 */
   const handleCopyCharacter = async (card: CharacterCard) => {
     try {
-      await copyText(characterBinding(card))
+      await copyText(withPrefix(characterBinding(card)))
       message.success(`${characterVariable(card.name)} 的角色设定已复制`)
     } catch {
       message.error('复制失败，请手动选中后复制')
@@ -156,7 +235,9 @@ export default function CharacterCardsTab({
     }
     try {
       await copyText(
-        breakdown.characters.map((card) => characterBinding(card)).join('\n\n'),
+        withPrefix(
+          breakdown.characters.map((card) => characterBinding(card)).join('\n\n'),
+        ),
       )
       message.success('全部角色变量已复制')
     } catch {
@@ -217,14 +298,95 @@ export default function CharacterCardsTab({
     return photoVersion ? `${url}?v=${photoVersion}` : url
   }
 
+  // 实时预览：把 {art_style_name} 换成当前故事的画风名称；未选画风时保留占位符并提示
+  const prefixMissingArtStyle =
+    prefixDraft.includes('{art_style_name}') && !artStyleName
+  const prefixPreview = artStyleName
+    ? prefixDraft.split('{art_style_name}').join(artStyleName)
+    : prefixDraft
+
+  // 全局生图前置提示词：所有故事共用一份，保存后新故事也自动生效。
+  // 即使当前故事还没有拆解结果，也要能在这里编辑。
+  const prefixPanel = (
+    <Collapse
+      style={{ marginBottom: 16 }}
+      items={[
+        {
+          key: 'image-prefix',
+          label: '生图前置提示词（全局 · 所有故事复制时自动带在开头）',
+          children: (
+            <>
+              <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+                复制角色卡变量时，这段内容会自动拼在最前面，开新会话时贴一次即可。
+                它保存在全局设置里，不隶属于某个故事，以后新建的故事同样适用。
+                支持变量：<Typography.Text code>{'{art_style_name}'}</Typography.Text>
+                （当前故事的画风名称）。
+              </Typography.Paragraph>
+
+              <div className="prompt-columns">
+                <div>
+                  <Typography.Text type="secondary" className="prompt-column-label">
+                    编辑（保留变量占位符）
+                  </Typography.Text>
+                  <Input.TextArea
+                    value={prefixDraft}
+                    onChange={(event) => setPrefixDraft(event.target.value)}
+                    rows={14}
+                    maxLength={8000}
+                    showCount
+                    placeholder="留空表示复制时不拼任何前置内容"
+                    style={{ fontFamily: 'Menlo, Consolas, monospace', fontSize: 13 }}
+                  />
+                </div>
+                <div>
+                  <Typography.Text type="secondary" className="prompt-column-label">
+                    实时预览（画风变量已替换）
+                  </Typography.Text>
+                  <Input.TextArea
+                    className="prompt-preview-textarea"
+                    value={prefixPreview}
+                    readOnly
+                    rows={14}
+                    style={{ fontFamily: 'Menlo, Consolas, monospace', fontSize: 13 }}
+                  />
+                  <Typography.Text
+                    type={prefixMissingArtStyle ? 'warning' : 'secondary'}
+                    className="prompt-preview-tip"
+                  >
+                    {prefixMissingArtStyle
+                      ? '当前故事未选择画风，预览中暂保留占位符'
+                      : '复制时按当前故事的画风名称替换；未使用的变量会原样保留'}
+                  </Typography.Text>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 12, textAlign: 'right' }}>
+                <Button
+                  type="primary"
+                  loading={prefixSaving}
+                  onClick={() => void handleSavePrefix()}
+                >
+                  保存前置提示词
+                </Button>
+              </div>
+            </>
+          ),
+        },
+      ]}
+    />
+  )
+
   if (!breakdown) {
     return (
-      <Empty description="还没有角色设定卡">
-        <Typography.Text type="secondary">
-          角色设定卡与分镜会一次性生成；在页面右上角复制拆解指令，
-          粘贴到 Claude Code 中运行后会自动写回这里。
-        </Typography.Text>
-      </Empty>
+      <div>
+        {prefixPanel}
+        <Empty description="还没有角色设定卡">
+          <Typography.Text type="secondary">
+            先复制「分镜对照指令」确认拆页顺序，再复制「分镜头脚本指令」；
+            角色卡与分镜会在生成脚本时自动写回这里。
+          </Typography.Text>
+        </Empty>
+      </div>
     )
   }
 
@@ -238,11 +400,13 @@ export default function CharacterCardsTab({
         description={
           <>
             每页生图提示词中的 <Typography.Text code>{'{{角色名}}'}</Typography.Text>{' '}
-            会引用这里的角色外形。请先在外部生图 AI 中把变量绑定到对应角色参考图，
-            再复制页面提示词使用；本工作台不生成、不管理参考垫图。
+            会引用这里的角色外形。每个角色可单独上传资产图，仅作本地存档与对照，
+            不参与生图；变量绑定与最终生图仍在外部生图 AI 中完成。
           </>
         }
       />
+
+      {prefixPanel}
 
       <div className="story-tab-toolbar">
         <Typography.Text type="secondary">
@@ -342,9 +506,30 @@ export default function CharacterCardsTab({
                 </Space>
               }
             >
-              <Typography.Paragraph className="content-preview">
-                {card.appearance}
-              </Typography.Paragraph>
+              <div className="character-card-body">
+                <div className="character-asset">
+                  <ImageUpload
+                    imageUrl={card.asset_url}
+                    onUpload={(file) =>
+                      handleUploadCharacterAsset(index, file)
+                    }
+                    onRemove={() => handleDeleteCharacterAsset(index)}
+                    maxSizeBytes={15 * 1024 * 1024}
+                    variant="asset"
+                    uploadText="上传资产图"
+                    replaceText="替换资产图"
+                  />
+                  <Typography.Text
+                    type="secondary"
+                    className="character-asset-caption"
+                  >
+                    资产图 · 本地存档
+                  </Typography.Text>
+                </div>
+                <Typography.Paragraph className="content-preview">
+                  {card.appearance}
+                </Typography.Paragraph>
+              </div>
             </Card>
           ))}
         </div>

@@ -112,7 +112,7 @@ export default function DeepSeekKeyPanel({
               type="warning"
               showIcon
               message="尚未配置 API Key，无法生成小红书文案"
-              description="配置后即可在「发文管理」中根据故事一键生成标题与正文。"
+              description="配置后即可在故事详情的「发文配置」中按章生成标题与正文。"
             />
           )}
 

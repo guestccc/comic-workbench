@@ -6,10 +6,16 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from ..config import DEEPSEEK_KEY, DEFAULT_START_PROMPT, PROMPT_KEY
+from ..config import (
+    DEEPSEEK_KEY,
+    DEFAULT_START_PROMPT,
+    IMAGE_PREFIX_PROMPT_KEY,
+    PROMPT_KEY,
+)
 from ..crud import (
     delete_setting,
     get_art_styles,
+    get_image_prefix_prompt,
     get_start_prompt,
     mask_key,
     resolve_deepseek_key,
@@ -23,6 +29,7 @@ from ..schemas import (
     ArtStylesUpdate,
     DeepSeekKeyUpdate,
     DeepSeekStatus,
+    ImagePrefixPromptUpdate,
     PromptOptimizeRequest,
     PromptUpdate,
     SettingsRead,
@@ -40,6 +47,7 @@ def _build_settings(db: Session) -> SettingsRead:
     prompt, prompt_row = get_start_prompt(db)
     key, source, db_configured = resolve_deepseek_key(db)
     art_styles, active_art_style = get_art_styles(db)
+    image_prefix_prompt, _ = get_image_prefix_prompt(db)
     return SettingsRead(
         prompt=prompt,
         is_default=prompt == DEFAULT_START_PROMPT,
@@ -52,6 +60,7 @@ def _build_settings(db: Session) -> SettingsRead:
         ),
         art_styles=art_styles,  # type: ignore[arg-type]
         active_art_style=active_art_style,
+        image_prefix_prompt=image_prefix_prompt,
     )
 
 
@@ -63,6 +72,16 @@ def read_settings(db: Session = Depends(get_db)) -> SettingsRead:
 @router.put("/prompt", response_model=SettingsRead)
 def update_prompt(payload: PromptUpdate, db: Session = Depends(get_db)) -> SettingsRead:
     upsert_setting(db, PROMPT_KEY, payload.content)
+    db.commit()
+    return _build_settings(db)
+
+
+@router.put("/image-prefix-prompt", response_model=SettingsRead)
+def update_image_prefix_prompt(
+    payload: ImagePrefixPromptUpdate, db: Session = Depends(get_db)
+) -> SettingsRead:
+    """保存全局生图前置提示词；所有故事共用，新故事自动生效。"""
+    upsert_setting(db, IMAGE_PREFIX_PROMPT_KEY, payload.content.strip())
     db.commit()
     return _build_settings(db)
 

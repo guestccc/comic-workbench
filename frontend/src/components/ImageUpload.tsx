@@ -25,8 +25,8 @@ interface ImageUploadProps {
   disabled?: boolean
   /** 大小上限（字节），默认 5MB；分镜成品图传 15MB */
   maxSizeBytes?: number
-  /** card：封面小卡片；thumb：大缩略图 + 侧边按钮；button：仅紧凑按钮，用于折叠标题栏等窄空间 */
-  variant?: 'card' | 'thumb' | 'button'
+  /** card：封面小卡片；thumb：大缩略图 + 侧边按钮；button：仅紧凑按钮；asset：竖版缩略图 + 下方按钮 */
+  variant?: 'card' | 'thumb' | 'button' | 'asset'
   /** 无图时的按钮文案 */
   uploadText?: string
   /** 有图时的替换按钮文案（thumb 形态） */
@@ -203,6 +203,48 @@ export default function ImageUpload({
             />
           )}
         </Space>
+      ) : variant === 'asset' ? (
+        // 角色资产图：竖版缩略图 + 下方「上传 / 替换 / 删除」
+        <div>
+          {imageUrl ? (
+            <Image
+              src={imageUrl}
+              className="image-upload-asset-image"
+              alt="角色资产图预览"
+            />
+          ) : (
+            <div
+              className="image-upload-asset-placeholder"
+              onClick={openModal}
+            >
+              {uploading ? <LoadingOutlined /> : <PictureOutlined />}
+              <div className="cover-upload-text">
+                {uploading ? '上传中' : uploadText}
+              </div>
+            </div>
+          )}
+          <Space size={4} style={{ marginTop: 6 }}>
+            <Button
+              size="small"
+              icon={<UploadOutlined />}
+              loading={uploading}
+              disabled={disabled}
+              onClick={openModal}
+            >
+              {imageUrl ? replaceText : uploadText}
+            </Button>
+            {imageUrl && onRemove && (
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={onRemove}
+                disabled={uploading}
+              />
+            )}
+          </Space>
+        </div>
       ) : imageUrl ? (
         <Space align="start" size={12}>
           <Image

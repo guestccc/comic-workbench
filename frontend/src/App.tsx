@@ -2,12 +2,10 @@ import { Layout, Menu, Typography } from 'antd'
 import {
   BookOutlined,
   EditOutlined,
-  SendOutlined,
   SettingOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import PostsPage from './pages/PostsPage'
 import PromptPage from './pages/PromptPage'
 import SettingsPage from './pages/SettingsPage'
 import StoriesPage from './pages/StoriesPage'
@@ -18,14 +16,12 @@ const { Sider, Content, Header } = Layout
 const menuItems: MenuProps['items'] = [
   { key: '/prompt', icon: <EditOutlined />, label: '启动提示词' },
   { key: '/stories', icon: <BookOutlined />, label: '故事管理' },
-  { key: '/posts', icon: <SendOutlined />, label: '发文管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
 ]
 
 const pageTitles: Record<string, string> = {
   '/prompt': '启动提示词与画风配置',
   '/stories': '故事库',
-  '/posts': '小红书发文',
   '/settings': '应用设置',
 }
 
@@ -92,7 +88,6 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/stories" element={<StoriesPage />} />
             <Route path="/stories/:id" element={<StoryDetailPage />} />
-            <Route path="/posts" element={<PostsPage />} />
             <Route path="*" element={<Navigate to="/prompt" replace />} />
           </Routes>
         </Content>

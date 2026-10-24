@@ -14,10 +14,13 @@ import type {
   StoryboardPagePayload,
   StoryBreakdown,
   StoryBreakdownPatch,
+  StoryChapterPostConfig,
   StoryOptimizationAnalysis,
   StoryPostConfig,
   StoryPostConfigPayload,
+  StoryZhihuPayload,
   UploadResult,
+  ZhihuAliasSuggestions,
 } from '../types'
 
 /** 统一的 API 错误：携带 HTTP 状态码与后端机器错误码。 */
@@ -90,6 +93,11 @@ export const api = {
     }),
   resetPrompt: () =>
     request<SettingsData>('/api/settings/prompt/reset', { method: 'POST' }),
+  saveImagePrefixPrompt: (content: string) =>
+    request<SettingsData>('/api/settings/image-prefix-prompt', {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
   saveArtStyles: (payload: ArtStylesPayload) =>
     request<SettingsData>('/api/settings/art-styles', {
       method: 'PUT',
@@ -118,6 +126,19 @@ export const api = {
   getStory: (id: number) => request<Story>(`/api/stories/${id}`),
   deleteStory: (id: number) =>
     request<void>(`/api/stories/${id}`, { method: 'DELETE' }),
+  updateStoryZhihu: (id: number, payload: StoryZhihuPayload) =>
+    request<Story>(`/api/stories/${id}/zhihu`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  suggestZhihuAliases: (id: number, title: string) =>
+    request<ZhihuAliasSuggestions>(
+      `/api/stories/${id}/zhihu/alias-suggestions`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ title }),
+      },
+    ),
 
   // 故事拆解结果（由 Claude Code 技能写回，页面可编辑）
   getBreakdown: (storyId: number) =>
@@ -169,6 +190,57 @@ export const api = {
       `/api/stories/${storyId}/breakdown/pages/${pageNumber}/image`,
       { method: 'DELETE' },
     ),
+  /** 上传章节封面 / 引导卡；重复上传覆盖旧图 */
+  uploadChapterCover: (storyId: number, chapterNumber: number, file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request<StoryBreakdown>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/cover/image`,
+      { method: 'POST', body: formData },
+    )
+  },
+  deleteChapterCover: (storyId: number, chapterNumber: number) =>
+    request<void>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/cover/image`,
+      { method: 'DELETE' },
+    ),
+  uploadChapterGuide: (storyId: number, chapterNumber: number, file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request<StoryBreakdown>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/guide/image`,
+      { method: 'POST', body: formData },
+    )
+  },
+  deleteChapterGuide: (storyId: number, chapterNumber: number) =>
+    request<void>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/guide/image`,
+      { method: 'DELETE' },
+    ),
+  /** 导出单章图片（ZIP，按封面 → 正文 → 引导卡排序） */
+  chapterExportUrl: (storyId: number, chapterNumber: number) =>
+    `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/export`,
+  /** 导出全部章节图片（ZIP，每章一个文件夹） */
+  allChaptersExportUrl: (storyId: number) =>
+    `/api/stories/${storyId}/breakdown/export-images`,
+  /** 给单个角色上传资产图；重复上传覆盖旧图，文件保存在本地 uploads 目录 */
+  uploadCharacterAsset: (
+    storyId: number,
+    characterIndex: number,
+    file: File,
+  ) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request<StoryBreakdown>(
+      `/api/stories/${storyId}/breakdown/characters/${characterIndex}/asset-image`,
+      { method: 'POST', body: formData },
+    )
+  },
+  deleteCharacterAsset: (storyId: number, characterIndex: number) =>
+    request<void>(
+      `/api/stories/${storyId}/breakdown/characters/${characterIndex}/asset-image`,
+      { method: 'DELETE' },
+    ),
   /** 上传最终确认的人物合照；重复上传覆盖旧图，文件保存在本地 uploads 目录 */
   uploadGroupPhoto: (storyId: number, file: File) => {
     const formData = new FormData()
@@ -209,6 +281,22 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
+  getChapterPostConfig: (storyId: number, chapterNumber: number) =>
+    request<StoryChapterPostConfig | null>(
+      `/api/stories/${storyId}/post-config?chapter=${chapterNumber}`,
+    ),
+  saveChapterPostConfig: (
+    storyId: number,
+    chapterNumber: number,
+    payload: StoryPostConfigPayload,
+  ) =>
+    request<StoryChapterPostConfig>(
+      `/api/stories/${storyId}/post-config?chapter=${chapterNumber}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    ),
 
   // 上传
   uploadCover: (file: File) => {
@@ -252,10 +340,15 @@ export const api = {
     }),
   deletePost: (id: number) =>
     request<void>(`/api/posts/${id}`, { method: 'DELETE' }),
-  generateCopy: (storyId: number) =>
+  generateCopy: (storyId: number, chapterNumber?: number) =>
     request<GeneratedCopy>('/api/posts/generate', {
       method: 'POST',
-      body: JSON.stringify({ story_id: storyId }),
+      body: JSON.stringify({
+        story_id: storyId,
+        ...(chapterNumber !== undefined
+          ? { chapter_number: chapterNumber }
+          : {}),
+      }),
     }),
 }
 

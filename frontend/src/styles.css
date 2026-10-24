@@ -253,6 +253,355 @@ body {
   border-radius: 8px;
 }
 
+/* 分镜对照表：第一步产物，只读表格 */
+.mapping-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mapping-toolbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.mapping-toolbar .ant-alert {
+  flex: 1;
+}
+
+.mapping-source-text {
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 优化文弹窗里的 AI 优化输入区 */
+.article-optimize-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #e6f4ff;
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+.article-optimize-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+/* 优化文连续阅读：每段前标出对应分镜页 */
+.article-map-body {
+  margin-top: 10px;
+  max-height: 65vh;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #262626;
+  font-size: 14px;
+  line-height: 2;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.article-map-segment {
+  border-radius: 3px;
+  padding: 1px 2px;
+  transition: background 0.15s;
+}
+
+.article-map-segment:nth-child(even) {
+  background: #f7faff;
+}
+
+.article-map-segment:hover {
+  background: #e6f4ff;
+}
+
+.article-map-segment-off {
+  opacity: 0.4;
+}
+
+.article-map-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  margin-right: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  vertical-align: 1px;
+}
+
+/* 知乎推广信息：原文标题 / 原文 ID / 搜索别名 */
+.zhihu-info-card {
+  margin-bottom: 16px;
+}
+
+.zhihu-info-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.zhihu-info-label {
+  flex: 0 0 72px;
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.zhihu-info-value {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.zhihu-alias-tag {
+  margin-inline-end: 0;
+}
+
+.zhihu-info-hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.zhihu-alias-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.zhihu-alias-option {
+  margin-inline-end: 0;
+  cursor: pointer;
+}
+
+/* 发文配置：按章节选择文案 */
+.post-config-alias-bar {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.post-config-chapter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid #e6f4ff;
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+/* 章节发布：一章 = 封面 + 正文 + 引导卡 */
+.chapter-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chapter-tab-toolbar {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chapter-tab-toolbar .ant-alert {
+  flex: 1 1 360px;
+}
+
+.chapter-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 每章可折叠：标题栏保留进度标签，展开后再显示封面 / 引导卡 / 正文操作 */
+.chapter-list .ant-collapse-item.chapter-card {
+  margin-bottom: 16px;
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.chapter-list .ant-collapse-item.chapter-card:last-child {
+  margin-bottom: 0;
+}
+
+.chapter-list .chapter-card > .ant-collapse-header {
+  align-items: center;
+}
+
+.chapter-card .ant-collapse-header-text {
+  min-width: 0;
+}
+
+.chapter-card .ant-collapse-content-box {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 16px 16px;
+}
+
+.chapter-asset-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.chapter-asset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fff;
+  min-width: 0;
+}
+
+.chapter-asset-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chapter-text-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.chapter-cover-main {
+  color: #262626;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.chapter-prompt-preview {
+  margin: 0 !important;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.chapter-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px dashed #f0f0f0;
+}
+
+.chapter-content-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chapter-page-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chapter-page-list .ant-tag {
+  margin-inline-end: 0;
+}
+
+.article-map-segment-excluded {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.article-map-excluded-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #d9d9d9;
+  color: #595959;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+@media (max-width: 960px) {
+  .chapter-asset-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 分镜对照：优化文按原文顺序分段，块头标页码 */
+.page-map {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.page-map-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 58vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.page-map-block {
+  border-left: 3px solid #1677ff;
+  border-radius: 4px;
+  background: #fafafa;
+  padding: 8px 10px;
+}
+
+.page-map-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-bottom: 4px;
+}
+
+.page-map-main {
+  font-size: 12px;
+}
+
+.page-map-text {
+  margin: 0;
+  color: #262626;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 原文 / 优化文：AI 改动解读 */
 .analysis-body {
   max-height: 58vh;
@@ -308,6 +657,62 @@ body {
   margin-bottom: 16px;
 }
 
+/* 分镜脚本按章节分组：外层章节折叠，内层仍是单页折叠 */
+.storyboard-chapters > .ant-collapse-item {
+  margin-bottom: 16px;
+  border: 1px solid #d6e4ff;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.storyboard-chapters > .ant-collapse-item:last-child {
+  margin-bottom: 0;
+}
+
+.storyboard-chapters > .ant-collapse-item > .ant-collapse-header {
+  align-items: center;
+  background: #f7fbff;
+}
+
+.storyboard-chapters
+  > .ant-collapse-item
+  > .ant-collapse-content
+  > .ant-collapse-content-box {
+  padding: 16px;
+  background: #fbfdff;
+}
+
+.storyboard-chapter-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.storyboard-chapter-label .ant-tag {
+  margin-inline-end: 0;
+}
+
+/* 批量复制：选择栏与标题栏勾选框 */
+.storyboard-selection-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.storyboard-page-label .ant-checkbox-wrapper,
+.storyboard-chapter-label .ant-checkbox-wrapper {
+  flex: 0 0 auto;
+}
+
 /* 分镜页折叠面板：默认折叠，标题栏展示本页故事内容摘要 */
 .storyboard-pages .ant-collapse-item {
   border: 1px solid #f0f0f0;
@@ -319,6 +724,22 @@ body {
 
 .storyboard-pages .ant-collapse-item:last-child {
   margin-bottom: 0;
+}
+
+/* 已上传成品图的分镜页：整行淡绿色，和未完成的页区分开 */
+.storyboard-pages .ant-collapse-item.storyboard-page-done {
+  background: #f6ffed;
+  border-color: #b7eb8f;
+}
+
+.storyboard-pages .ant-collapse-item.storyboard-page-done > .ant-collapse-header {
+  background: #f6ffed;
+}
+
+.storyboard-pages
+  .ant-collapse-item.storyboard-page-done
+  > .ant-collapse-header:hover {
+  background: #eaffd8;
 }
 
 /* 折叠内容区留出内边距 */
@@ -388,6 +809,161 @@ body {
 /* 多句对话之间保持紧凑，避免读起来像两个段落 */
 .script-dialogue + .script-dialogue {
   margin-top: 2px;
+}
+
+/* 分镜详情：双栏拍摄单 */
+.page-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #f0f0f0;
+}
+
+.page-sheet-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.page-sheet-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.page-sheet-script {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.page-sheet-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed #f0f0f0;
+}
+
+.page-sheet-section:last-of-type {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.page-sheet-section-title {
+  margin: 0;
+  color: #595959;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.page-sheet-lead {
+  color: #262626;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.page-sheet-source {
+  padding: 10px 12px;
+  border-bottom: none;
+  border-left: 3px solid #d9d9d9;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+.page-sheet-source .page-sheet-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.page-sheet-source-position {
+  color: #8c8c8c;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.page-sheet-source-text {
+  margin: 0;
+  color: #595959;
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.page-sheet-narration {
+  padding: 10px 12px;
+  border-left: 3px solid #1677ff;
+  border-radius: 4px;
+  background: #f7fbff;
+}
+
+.page-sheet-main-narration {
+  color: #1f1f1f;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.page-sheet .script-dialogue {
+  display: inline-block;
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #f5f5f5;
+}
+
+.page-sheet-highlight {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+
+.page-sheet-character-review {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.page-sheet-visual {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.page-sheet-card {
+  padding: 10px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.page-sheet-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* 提示词卡片里去掉外层灰底，避免卡片套卡片 */
+.page-sheet-prompt-card .prompt-sections {
+  padding: 0;
+  background: transparent;
+}
+
+@media (max-width: 960px) {
+  .page-sheet-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* 分镜成品图缩略图 */
@@ -510,6 +1086,50 @@ body {
   min-height: 96px;
 }
 
+/* 角色卡：左侧资产图，右侧外形描述 */
+.character-card-body {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.character-asset {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.character-asset .ant-image-img {
+  width: 96px;
+  height: 128px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.image-upload-asset-placeholder {
+  width: 96px;
+  height: 128px;
+  border: 1px dashed #d9d9d9;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #fafafa;
+  color: #8c8c8c;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.character-asset-caption {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+}
+
 /* 同步角色卡弹窗的解析预览列表 */
 .sync-preview-list {
   margin-top: 8px;
@@ -590,4 +1210,121 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   color: #595959;
+}
+
+/* 故事管理：瀑布流卡片墙（封面按原图比例自然错落） */
+.story-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.story-masonry {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.story-masonry-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.story-masonry .story-card {
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.story-card .ant-card-cover {
+  margin: 0;
+}
+
+.story-card-cover {
+  overflow: hidden;
+  background: #fafafa;
+}
+
+.story-card-cover .ant-image {
+  display: block;
+  width: 100%;
+}
+
+.story-card-cover-img,
+.story-card-cover .ant-image-img {
+  display: block;
+  width: 100%;
+  max-height: 380px;
+  object-fit: cover;
+  border-radius: 12px 12px 0 0;
+}
+
+.story-card-cover-empty {
+  /* 无封面时用 3:4 竖版占位，和条漫封面比例一致 */
+  aspect-ratio: 3 / 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: linear-gradient(135deg, #fff1f0, #f6ffed 55%, #e6f4ff);
+  color: #8c8c8c;
+  text-align: center;
+}
+
+.story-card-cover-initial {
+  font-size: 44px;
+  font-weight: 600;
+  line-height: 1;
+  color: #bfbfbf;
+}
+
+.story-card-cover-hint {
+  font-size: 12px;
+}
+
+.story-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.story-card-head .ant-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+.story-card-title {
+  min-width: 0;
+  font-size: 15px;
+}
+
+.story-card-excerpt {
+  margin: 10px 0 0 !important;
+  color: #595959;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.story-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  color: #bfbfbf;
+  font-size: 12px;
+}
+
+.story-card .ant-card-actions {
+  border-top: 1px solid #f5f5f5;
 }

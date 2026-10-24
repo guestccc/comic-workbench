@@ -8,10 +8,73 @@ import httpx
 import pytest
 
 from tests.conftest import make_copy_options, make_response
+from tests.test_breakdowns import (
+    _chapter_payload,
+    _mapping_items,
+    _patch_breakdown,
+    _prepare,
+)
 
 
 def _generate(client, story_id: int):
     return client.post("/api/posts/generate", json={"story_id": story_id})
+
+
+def test_generate_chapter_uses_chapter_content_and_recap(
+    client, configure_key, mock_deepseek
+):
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    assert (
+        _patch_breakdown(
+            client, story_id, mapping=_mapping_items([1, 2, 3, 4])
+        ).status_code
+        == 200
+    )
+    assert (
+        _patch_breakdown(
+            client,
+            story_id,
+            chapters=[
+                _chapter_payload(1, [1, 2]),
+                _chapter_payload(2, [3, 4]),
+            ],
+        ).status_code
+        == 200
+    )
+    mock_deepseek["response"] = make_response()
+
+    response = client.post(
+        "/api/posts/generate",
+        json={"story_id": story_id, "chapter_number": 2},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["chapter_number"] == 2
+
+    _, messages = mock_deepseek["calls"][0]
+    system_prompt = messages[0]["content"]
+    user_prompt = messages[1]["content"]
+    assert "本章文案要求" in system_prompt
+    assert "前情提要" in system_prompt
+    # 本章素材 + 上一章素材都在，整篇故事原文不传入
+    assert "第 2 章" in user_prompt
+    assert "第3段原文" in user_prompt
+    assert "第4段原文" in user_prompt
+    assert "第1段原文" in user_prompt
+    assert story["content"] not in user_prompt
+
+
+def test_generate_chapter_requires_chapter_plan(
+    client, configure_key, mock_deepseek
+):
+    story, _ = _prepare(client)
+    response = client.post(
+        "/api/posts/generate",
+        json={"story_id": story["id"], "chapter_number": 1},
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "CHAPTERS_NOT_FOUND"
+    assert mock_deepseek["calls"] == []
 
 
 def test_generate_requires_key(client, story, mock_deepseek):

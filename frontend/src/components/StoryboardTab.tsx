@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   App,
   AutoComplete,
   Button,
+  Checkbox,
   Collapse,
   Empty,
   Form,
@@ -27,13 +28,20 @@ import ImageUpload from './ImageUpload'
 import { api, getErrorMessage } from '../api/client'
 import type {
   Story,
+  StoryboardChapterRead,
+  StoryboardMappingItem,
   StoryboardPage,
   StoryboardPagePayload,
   StoryboardShotType,
   StoryBreakdown,
 } from '../types'
 import { copyText } from '../utils/clipboard'
-import { formatImagePrompt, parseImagePrompt } from '../utils/formatPrompt'
+import {
+  formatImagePrompt,
+  locateNarrationHighlight,
+  parseImagePrompt,
+  type ImagePromptContext,
+} from '../utils/formatPrompt'
 
 interface StoryboardTabProps {
   story: Story
@@ -80,7 +88,7 @@ const CAMERA_ANGLE_OPTIONS = [
   '主观视角',
 ].map((value) => ({ value }))
 
-/** 页面作用：第 1 页固定为钩子封面，其余按本页在故事中的功能选择。 */
+/** 页面作用：新流程不生成钩子页；「钩子封面」仅保留用于旧数据或手动标注。 */
 const PAGE_ROLE_OPTIONS = [
   { value: '钩子封面', label: '钩子封面' },
   { value: '铺垫', label: '铺垫' },
@@ -110,8 +118,79 @@ function parseDialogues(text: string | undefined): string[] {
     .filter(Boolean)
 }
 
+/** 页面在界面上的显示名：有章节时用章内页码，否则回退到全局页码。 */
+function pageDisplayLabel(
+  page: StoryboardPage,
+  chapters: StoryboardChapterRead[],
+): string {
+  if (page.chapter_number != null && page.chapter_page_number != null) {
+    return `第${page.chapter_number}章第${page.chapter_page_number}页`
+  }
+  return `第${page.display_page_number ?? page.page_number}页`
+}
+
+/** 图片里显示的页码：优先使用服务端计算值，旧响应才本地回退。 */
+function pageImageNumber(page: StoryboardPage): number {
+  return (
+    page.display_page_number ??
+    page.chapter_page_number ??
+    page.page_number
+  )
+}
+
+/** 把分镜页的结构化字段整理成提示词格式化上下文。 */
+function toPromptContext(page: StoryboardPage): ImagePromptContext {
+  return {
+    dialogues: page.dialogues,
+    cameraAngle: page.camera_angle,
+    // 图片里的页码用章内页码；全局页码只作为接口 / 文件编号
+    pageNumber: pageImageNumber(page),
+    narration: {
+      main: page.narration_main,
+      highlight: page.narration_highlight,
+      sub: page.narration_sub,
+    },
+  }
+}
+
+/** 标红词的位置说明；找不到时提醒用户该页不会标红。 */
+function describeHighlight(page: StoryboardPage): string {
+  if (!page.narration_highlight.trim()) return ''
+  const location = locateNarrationHighlight({
+    main: page.narration_main,
+    highlight: page.narration_highlight,
+    sub: page.narration_sub,
+  })
+  if (!location) return '未在旁白中找到，生图时不标红'
+  return `标红位置：${location.block === 'main' ? '主旁白' : '副旁白'} · ${location.position}`
+}
+
 /** 成品图大小上限（与后端 MAX_PAGE_IMAGE_BYTES 保持一致，格式校验由 ImageUpload 统一处理）。 */
 const PAGE_IMAGE_MAX_SIZE = 15 * 1024 * 1024
+
+/**
+ * 本页对应的优化文原段。
+ *
+ * 原段来自分镜对照表（mapping.source_text），按 mapping_page_number 关联；
+ * 只读展示，方便对照本页脚本相比原文做了哪些取舍。
+ */
+function OriginalSegment({ item }: { item?: StoryboardMappingItem }) {
+  if (!item) return null
+  const position = [item.paragraph, item.part].filter(Boolean).join(' · ')
+  return (
+    <section className="page-sheet-section page-sheet-source">
+      <h4 className="page-sheet-section-title">
+        原文摘录
+        {position && (
+          <span className="page-sheet-source-position">{position}</span>
+        )}
+      </h4>
+      <blockquote className="page-sheet-source-text">
+        {item.source_text}
+      </blockquote>
+    </section>
+  )
+}
 
 /**
  * 分镜头脚本 tab。
@@ -135,8 +214,33 @@ export default function StoryboardTab({
 
   const [compareOpen, setCompareOpen] = useState(false)
 
+  // 分镜脚本按章节折叠：章节和页都默认收起，避免长列表一次铺开
+  const [activeChapterKeys, setActiveChapterKeys] = useState<string[]>([])
   // 受控的展开页码：默认全部折叠，支持一键展开 / 折叠全部
   const [activePageKeys, setActivePageKeys] = useState<string[]>([])
+  // 批量复制选中的页面；只存在前端，不写数据库
+  const [selectedPageNumbers, setSelectedPageNumbers] = useState<Set<number>>(
+    new Set(),
+  )
+
+  // 页面被删除或重新生成后，清掉不存在的选中项
+  useEffect(() => {
+    const valid = new Set((breakdown?.pages ?? []).map((page) => page.page_number))
+    setSelectedPageNumbers((previous) => {
+      const next = new Set(
+        [...previous].filter((pageNumber) => valid.has(pageNumber)),
+      )
+      return next.size === previous.size ? previous : next
+    })
+  }, [breakdown])
+
+  const selectedPages = useMemo(
+    () =>
+      (breakdown?.pages ?? [])
+        .filter((page) => selectedPageNumbers.has(page.page_number))
+        .sort((left, right) => left.page_number - right.page_number),
+    [breakdown, selectedPageNumbers],
+  )
 
   const [optimizedOpen, setOptimizedOpen] = useState(false)
   const [optimizedText, setOptimizedText] = useState('')
@@ -150,14 +254,75 @@ export default function StoryboardTab({
   const handleCopyPrompt = async (page: StoryboardPage) => {
     try {
       await copyText(
-        formatImagePrompt(
-          page.image_prompt,
-          page.page_number,
-          page.dialogues,
-          page.camera_angle,
-        ),
+        formatImagePrompt(page.image_prompt, toPromptContext(page)),
       )
-      message.success(`第 ${page.page_number} 页生图提示词已复制`)
+      message.success(
+        `${pageDisplayLabel(page, breakdown?.chapters ?? [])} 生图提示词已复制`,
+      )
+    } catch {
+      message.error('复制失败，请手动选中后复制')
+    }
+  }
+
+  /** 勾选 / 取消勾选一组页面（整章或整章未分章组）。 */
+  const setPagesSelected = (pages: StoryboardPage[], checked: boolean) => {
+    setSelectedPageNumbers((previous) => {
+      const next = new Set(previous)
+      pages.forEach((page) => {
+        if (checked) {
+          next.add(page.page_number)
+        } else {
+          next.delete(page.page_number)
+        }
+      })
+      return next
+    })
+  }
+
+  /** 批量复制：按全局页码顺序输出，每页复用单页复制渲染器。 */
+  const handleCopySelected = async () => {
+    if (selectedPages.length === 0) {
+      message.warning('请先勾选要复制的分镜页')
+      return
+    }
+
+    const total = selectedPages.length
+    const chapters = breakdown?.chapters ?? []
+    const chapterNumberOf = (page: StoryboardPage): number | undefined => {
+      if (page.chapter_number != null) return page.chapter_number
+      if (page.mapping_page_number == null) return undefined
+      return chapters.find((chapter) =>
+        chapter.mapping_page_numbers.includes(page.mapping_page_number!),
+      )?.chapter_number
+    }
+
+    const blocks = selectedPages.map((page, index) => {
+      const chapterNumber = chapterNumberOf(page)
+      const title =
+        chapterNumber == null
+          ? ''
+          : chapters.find(
+              (chapter) => chapter.chapter_number === chapterNumber,
+            )?.title ?? ''
+      const chapterLabel =
+        chapterNumber == null
+          ? ''
+          : `第${chapterNumber}章${title ? ` · ${title}` : ''} · `
+      return [
+        `=== 第${index + 1}张 / 共${total}张 ===`,
+        `${chapterLabel}${formatImagePrompt(
+          page.image_prompt,
+          toPromptContext(page),
+        )}`,
+      ].join('\n')
+    })
+
+    const text = `请按顺序生成以下 ${total} 张条漫图片。每张单独生成一张完整图片，不要合并成一张，不要分格。\n\n${blocks.join(
+      '\n\n---\n\n',
+    )}`
+    try {
+      await copyText(text)
+      message.success(`已复制 ${total} 页生图提示词（按章节顺序）`)
     } catch {
       message.error('复制失败，请手动选中后复制')
     }
@@ -178,7 +343,9 @@ export default function StoryboardTab({
         ...previous,
         [page.page_number]: Date.now(),
       }))
-      message.success(`第 ${page.page_number} 页成品图已上传，标记为完成`)
+      message.success(
+        `${pageDisplayLabel(page, breakdown?.chapters ?? [])} 成品图已上传，标记为完成`,
+      )
       await onRefresh()
     } catch (error) {
       message.error(getErrorMessage(error))
@@ -193,7 +360,10 @@ export default function StoryboardTab({
   const handleDeleteImage = (page: StoryboardPage) => {
     if (!breakdown) return
     modal.confirm({
-      title: `删除第 ${page.page_number} 页的成品图？`,
+      title: `删除${pageDisplayLabel(
+        page,
+        breakdown.chapters,
+      )}的成品图？`,
       content: '删除后该页恢复为未完成状态，图片文件会从本地删除。',
       okText: '删除',
       cancelText: '取消',
@@ -281,6 +451,10 @@ export default function StoryboardTab({
     }
 
     const payload: StoryboardPagePayload = {
+      // 来源对照段 / 章节由生成时写入；手动编辑不修改它们
+      mapping_page_number: editingPage.mapping_page_number ?? undefined,
+      chapter_number: editingPage.chapter_number ?? undefined,
+      chapter_page_number: editingPage.chapter_page_number ?? undefined,
       is_flashback: values.is_flashback,
       page_role: values.page_role || '',
       story_content: values.story_content,
@@ -306,7 +480,9 @@ export default function StoryboardTab({
         payload,
       )
       setEditOpen(false)
-      message.success(`第 ${editingPage.page_number} 页已保存`)
+      message.success(
+        `${pageDisplayLabel(editingPage, breakdown.chapters)}已保存`,
+      )
       await onRefresh()
     } catch (error) {
       message.error(getErrorMessage(error))
@@ -318,8 +494,9 @@ export default function StoryboardTab({
   const handleDeletePage = (page: StoryboardPage) => {
     if (!breakdown) return
     modal.confirm({
-      title: `删除第 ${page.page_number} 页？`,
-      content: '删除后不可恢复；如需重新生成，可使用「复制拆解指令」重跑。',
+      title: `删除${pageDisplayLabel(page, breakdown.chapters)}？`,
+      content:
+        '删除后不可恢复，章节页码会出现空号。如需继续生成，请先清空全部分镜页面，再按新的章节规划重新生成。',
       okText: '删除',
       cancelText: '取消',
       okButtonProps: { danger: true },
@@ -340,7 +517,7 @@ export default function StoryboardTab({
     modal.confirm({
       title: '清空所有分镜页面？',
       content:
-        '将删除全部页面，但保留优化后文章与角色设定卡。重新拆解前通常需要先清空，避免新旧分镜混在一起。',
+        '将删除全部正文分镜页及其成品图，但保留优化后文章、角色设定卡、分镜对照表、章节规划以及章节封面/引导卡。要调整章节或新增/删除对照段时，先清空正文页再按新规划重新生成。',
       okText: '清空页面',
       cancelText: '取消',
       okButtonProps: { danger: true },
@@ -361,7 +538,7 @@ export default function StoryboardTab({
     modal.confirm({
       title: '清空整份拆解？',
       content:
-        '将删除优化后文章、角色设定卡与全部分镜页面，且不可恢复。',
+        '将删除优化后文章、角色设定卡、分镜对照表与全部分镜页面，且不可恢复。',
       okText: '全部清空',
       cancelText: '取消',
       okButtonProps: { danger: true },
@@ -382,8 +559,8 @@ export default function StoryboardTab({
     return (
       <Empty description="还没有拆解结果">
         <Typography.Text type="secondary">
-          点击页面右上角「复制拆解指令」，粘贴到本项目的 Claude Code 中运行；
-          优化后文章、角色设定卡与全部分镜会一次性写回这里。
+          先点击页面右上角「复制分镜对照指令」，粘贴到本项目的 Claude Code 中运行；
+          确认分镜对照表顺序无误后，再复制「分镜头脚本指令」逐页生成分镜。
         </Typography.Text>
       </Empty>
     )
@@ -394,8 +571,320 @@ export default function StoryboardTab({
     label: card.role ? `${card.name}（${card.role}）` : card.name,
   }))
 
+  // 分镜页按 mapping_page_number 关联对照表原段，脚本页只展示，不重复存储
+  const mappingByPage = new Map(
+    breakdown.mapping.map((item) => [item.page_number, item]),
+  )
+
   // 有成品图的页数，用于顶部进度提示
   const doneCount = breakdown.pages.filter((page) => page.image_url).length
+
+  // 分镜页按章节归组：优先用页面上的章号，旧数据回退到对照段所属章节
+  const chapterByMapping = new Map<number, number>()
+  breakdown.chapters.forEach((chapter) => {
+    chapter.mapping_page_numbers.forEach((mappingNumber) => {
+      chapterByMapping.set(mappingNumber, chapter.chapter_number)
+    })
+  })
+  const chapterNumberOfPage = (page: StoryboardPage): number | undefined =>
+    page.chapter_number ??
+    (page.mapping_page_number != null
+      ? chapterByMapping.get(page.mapping_page_number)
+      : undefined)
+
+  const pagesByChapter = new Map<number, StoryboardPage[]>()
+  const unassignedPages: StoryboardPage[] = []
+  breakdown.pages.forEach((page) => {
+    const chapterNumber = chapterNumberOfPage(page)
+    if (
+      chapterNumber == null ||
+      !breakdown.chapters.some(
+        (chapter) => chapter.chapter_number === chapterNumber,
+      )
+    ) {
+      unassignedPages.push(page)
+      return
+    }
+    const list = pagesByChapter.get(chapterNumber) ?? []
+    list.push(page)
+    pagesByChapter.set(chapterNumber, list)
+  })
+  const chapterPageOrder = (left: StoryboardPage, right: StoryboardPage) =>
+    (left.chapter_page_number ?? left.page_number) -
+    (right.chapter_page_number ?? right.page_number)
+  pagesByChapter.forEach((list) => list.sort(chapterPageOrder))
+  unassignedPages.sort((left, right) => left.page_number - right.page_number)
+
+  const chapterGroups = breakdown.chapters.map((chapter) => ({
+    key: `chapter-${chapter.chapter_number}`,
+    chapter,
+    pages: pagesByChapter.get(chapter.chapter_number) ?? [],
+  }))
+  const allChapterKeys = [
+    ...chapterGroups.map((group) => group.key),
+    ...(unassignedPages.length > 0 ? ['unassigned'] : []),
+  ]
+  const allPageKeys = breakdown.pages.map((page) => String(page.page_number))
+  const hasExpanded =
+    activeChapterKeys.length > 0 || activePageKeys.length > 0
+
+  /** 生成某一章（或未分章）下的分镜页折叠项。 */
+  const renderPageItems = (groupPages: StoryboardPage[]) =>
+    groupPages.map((page) => ({
+      key: String(page.page_number),
+      // 已上传成品图的页整行淡绿，扫一眼就能看出进度
+      className: page.image_url ? 'storyboard-page-done' : undefined,
+      label: (
+        <div className="storyboard-page-label">
+          {/* 勾选后加入批量复制；阻止冒泡，避免顺带展开/收起 */}
+          <Checkbox
+            checked={selectedPageNumbers.has(page.page_number)}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) =>
+              setPagesSelected([page], event.target.checked)
+            }
+          />
+          {/* 已完成标记放在页码前面，扫一眼即可分辨进度 */}
+          {page.image_url && <Tag color="success">已完成</Tag>}
+          <Typography.Text strong className="storyboard-page-title">
+            {pageDisplayLabel(page, breakdown.chapters)}
+          </Typography.Text>
+          {page.chapter_number != null && (
+            <Tag color="geekblue">第{page.chapter_number}章</Tag>
+          )}
+          {page.mapping_page_number != null && (
+            <Tag>对照第{page.mapping_page_number}段</Tag>
+          )}
+          {page.page_role && (
+            <Tag color={PAGE_ROLE_COLORS[page.page_role] ?? 'default'}>
+              {page.page_role}
+            </Tag>
+          )}
+          {page.is_flashback && <Tag color="blue">回忆页</Tag>}
+          {page.camera_angle && <Tag color="cyan">{page.camera_angle}</Tag>}
+          <Tag>{page.shot_type}</Tag>
+          <Typography.Text
+            type="secondary"
+            className="storyboard-page-summary"
+            title={page.story_content}
+          >
+            {page.story_content}
+          </Typography.Text>
+        </div>
+      ),
+      extra: (
+        <Space size="small" onClick={(event) => event.stopPropagation()}>
+          {/* 标题栏直接上传成品图，无需展开折叠面板；交互与展开区一致（弹窗选择或粘贴） */}
+          <ImageUpload
+            variant="button"
+            imageUrl={pageImageSrc(page)}
+            uploadText="上传成品图"
+            replaceText="替换图片"
+            maxSizeBytes={PAGE_IMAGE_MAX_SIZE}
+            onUpload={(file) => handleUploadImage(page, file)}
+            disabled={imageBusy[page.page_number]}
+          />
+          <Button
+            size="small"
+            icon={<CopyOutlined />}
+            onClick={() => void handleCopyPrompt(page)}
+          >
+            复制提示词
+          </Button>
+          <Button
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => openEdit(page)}
+          >
+            编辑
+          </Button>
+          <Button
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => handleDeletePage(page)}
+          >
+            删除
+          </Button>
+        </Space>
+      ),
+      children: (
+        // 双栏拍摄单：左侧剧本字段，右侧成品图与生图提示词
+        <div className="page-sheet">
+          <div className="page-sheet-meta">
+            <Tag color="blue">
+              {pageDisplayLabel(page, breakdown.chapters)}
+            </Tag>
+            {page.chapter_number != null && (
+              <Tag color="geekblue">第{page.chapter_number}章</Tag>
+            )}
+            {page.mapping_page_number != null && (
+              <Tag>来源：对照第{page.mapping_page_number}段</Tag>
+            )}
+            {page.page_role && (
+              <Tag color={PAGE_ROLE_COLORS[page.page_role] ?? 'default'}>
+                {page.page_role}
+              </Tag>
+            )}
+            {page.is_flashback && <Tag color="blue">回忆页</Tag>}
+            <Tag>{page.shot_type}</Tag>
+            {page.camera_angle && <Tag color="cyan">{page.camera_angle}</Tag>}
+            {page.characters.map((name) => (
+              <Tag key={name}>{name}</Tag>
+            ))}
+          </div>
+
+          <div className="page-sheet-grid">
+            <div className="page-sheet-script">
+              <OriginalSegment
+                item={
+                  page.mapping_page_number != null
+                    ? mappingByPage.get(page.mapping_page_number)
+                    : undefined
+                }
+              />
+
+              <div className="script-field">
+                <span className="script-label">本页内容</span>
+                <p className="script-text page-sheet-lead">
+                  {page.story_content}
+                </p>
+              </div>
+
+              <section className="page-sheet-section">
+                <h4 className="page-sheet-section-title">画面</h4>
+                <div className="script-field">
+                  <span className="script-label">场景</span>
+                  <p className="script-text">{page.scene}</p>
+                </div>
+                <div className="script-field">
+                  <span className="script-label">动作与状态</span>
+                  <p className="script-text">{page.action_state}</p>
+                </div>
+                <div className="script-field">
+                  <span className="script-label">变化说明</span>
+                  <p className="script-text">{page.change_note}</p>
+                </div>
+              </section>
+
+              <section className="page-sheet-section page-sheet-narration">
+                <h4 className="page-sheet-section-title">旁白</h4>
+                <div className="page-sheet-main-narration">
+                  {page.narration_main}
+                </div>
+                {page.narration_highlight && (
+                  <div className="page-sheet-highlight">
+                    <Tag color="red">{page.narration_highlight}</Tag>
+                    <Typography.Text
+                      type="secondary"
+                      style={{ fontSize: 12 }}
+                    >
+                      {describeHighlight(page)}
+                    </Typography.Text>
+                  </div>
+                )}
+                <div className="script-field">
+                  <span className="script-label">副旁白</span>
+                  <p className="script-text">{page.narration_sub}</p>
+                </div>
+              </section>
+
+              <section className="page-sheet-section">
+                <h4 className="page-sheet-section-title">对话</h4>
+                {page.dialogues.length > 0 ? (
+                  page.dialogues.map((line, index) => (
+                    <p className="script-text script-dialogue" key={index}>
+                      {line}
+                    </p>
+                  ))
+                ) : (
+                  <Typography.Text type="secondary">无</Typography.Text>
+                )}
+              </section>
+
+              <div className="page-sheet-character-review">
+                <span className="script-label">人物设定回顾</span>
+                <Typography.Paragraph
+                  type="secondary"
+                  ellipsis={{
+                    rows: 2,
+                    expandable: true,
+                    symbol: '展开',
+                  }}
+                  style={{ marginBottom: 0 }}
+                >
+                  {page.character_review}
+                </Typography.Paragraph>
+              </div>
+            </div>
+
+            <div className="page-sheet-visual">
+              <div className="page-sheet-card">
+                <div className="page-sheet-card-head">
+                  <span className="script-label">成品图</span>
+                </div>
+                <ImageUpload
+                  variant="thumb"
+                  imageUrl={pageImageSrc(page)}
+                  uploadText="上传成品图并标记完成"
+                  replaceText="替换图片"
+                  maxSizeBytes={PAGE_IMAGE_MAX_SIZE}
+                  onUpload={(file) => handleUploadImage(page, file)}
+                  onRemove={() => handleDeleteImage(page)}
+                  disabled={imageBusy[page.page_number]}
+                />
+              </div>
+
+              <div className="page-sheet-card page-sheet-prompt-card">
+                <div className="page-sheet-card-head">
+                  <span className="script-label">生图提示词</span>
+                  <Button
+                    size="small"
+                    type="link"
+                    icon={<CopyOutlined />}
+                    onClick={() => void handleCopyPrompt(page)}
+                    style={{ paddingInline: 0 }}
+                  >
+                    复制提示词
+                  </Button>
+                </div>
+                <div className="prompt-sections">
+                  {parseImagePrompt(
+                    page.image_prompt,
+                    toPromptContext(page),
+                  ).map((section, index) => (
+                    <div
+                      className="prompt-section"
+                      key={`${section.label}-${index}`}
+                    >
+                      <span className="prompt-section-label">
+                        【{section.label}】
+                      </span>
+                      <p className="prompt-section-text">{section.text}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ),
+    }))
+
+  /** 章节内部（或未分章时）的分镜页折叠列表。 */
+  const renderPageCollapse = (groupPages: StoryboardPage[]) => (
+    <Collapse
+      ghost
+      className="storyboard-pages"
+      activeKey={activePageKeys}
+      onChange={(keys) =>
+        setActivePageKeys(
+          (Array.isArray(keys) ? keys : [keys]).map(String),
+        )
+      }
+      items={renderPageItems(groupPages)}
+    />
+  )
 
   return (
     <div>
@@ -404,6 +893,11 @@ export default function StoryboardTab({
           <Typography.Text type="secondary">
             共 {breakdown.pages.length} 页
           </Typography.Text>
+          {breakdown.chapters.length > 0 && (
+            <Typography.Text type="secondary">
+              · {breakdown.chapters.length} 章
+            </Typography.Text>
+          )}
           {breakdown.pages.length > 0 && (
             <Typography.Text type="secondary">
               · 已完成 {doneCount} 页
@@ -411,28 +905,30 @@ export default function StoryboardTab({
           )}
           {breakdown.pages.length > 0 && (
             <Typography.Text type="secondary">
-              · 第 1 页为钩子封面 · 提示词使用 {'{{角色名}}'} 变量
+              · 章内页码 · 提示词使用 {'{{角色名}}'} 变量
             </Typography.Text>
           )}
           {breakdown.pages.length > 0 && (
             <Button
               size="small"
               icon={
-                activePageKeys.length > 0 ? (
+                hasExpanded ? (
                   <MenuFoldOutlined />
                 ) : (
                   <MenuUnfoldOutlined />
                 )
               }
-              onClick={() =>
-                setActivePageKeys(
-                  activePageKeys.length > 0
-                    ? []
-                    : breakdown.pages.map((page) => String(page.page_number)),
-                )
-              }
+              onClick={() => {
+                if (hasExpanded) {
+                  setActiveChapterKeys([])
+                  setActivePageKeys([])
+                  return
+                }
+                setActiveChapterKeys(allChapterKeys)
+                setActivePageKeys(allPageKeys)
+              }}
             >
-              {activePageKeys.length > 0 ? '全部折叠' : '全部展开'}
+              {hasExpanded ? '全部折叠' : '全部展开'}
             </Button>
           )}
         </Space>
@@ -464,232 +960,170 @@ export default function StoryboardTab({
         </Space>
       </div>
 
-      {breakdown.pages.length === 0 ? (
-        <Empty description="还没有分镜页面">
+      {breakdown.pages.length > 0 && (
+        <div className="storyboard-selection-bar">
+          <Checkbox
+            checked={selectedPages.length === breakdown.pages.length}
+            indeterminate={
+              selectedPages.length > 0 &&
+              selectedPages.length < breakdown.pages.length
+            }
+            onChange={(event) =>
+              setPagesSelected(breakdown.pages, event.target.checked)
+            }
+          >
+            全选本故事
+          </Checkbox>
           <Typography.Text type="secondary">
-            在 Claude Code 中运行拆解技能后，优化文、角色卡与全部分镜会一次性写回这里；
-            写入完成后刷新页面即可查看。
+            已选 {selectedPages.length} 页
+          </Typography.Text>
+          <Button
+            size="small"
+            type="primary"
+            icon={<CopyOutlined />}
+            disabled={selectedPages.length === 0}
+            onClick={() => void handleCopySelected()}
+          >
+            复制选中提示词
+          </Button>
+          <Button
+            size="small"
+            disabled={selectedPages.length === 0}
+            onClick={() => setSelectedPageNumbers(new Set())}
+          >
+            清空选择
+          </Button>
+        </div>
+      )}
+
+      {breakdown.pages.length === 0 ? (
+        <Empty description="还没有正文分镜页">
+          <Typography.Text type="secondary">
+            到「章节发布」按章复制脚本指令生成正文；封面和引导卡也在那里管理。
           </Typography.Text>
         </Empty>
-      ) : (
-        // 分镜页默认全部折叠，标题栏直接展示本页故事内容，便于快速定位
+      ) : breakdown.chapters.length > 0 ? (
+        // 分镜脚本按章节归组；章节和页都默认收起，点标题栏展开
         <Collapse
           ghost
-          className="storyboard-pages"
-          activeKey={activePageKeys}
+          className="storyboard-chapters"
+          activeKey={activeChapterKeys}
           onChange={(keys) =>
-            setActivePageKeys(
+            setActiveChapterKeys(
               (Array.isArray(keys) ? keys : [keys]).map(String),
             )
           }
-          items={breakdown.pages.map((page) => ({
-            key: String(page.page_number),
-            label: (
-              <div className="storyboard-page-label">
-                {/* 已完成标记放在页码前面，扫一眼即可分辨进度 */}
-                {page.image_url && <Tag color="success">已完成</Tag>}
-                <Typography.Text strong className="storyboard-page-title">
-                  第 {page.page_number} 页
-                </Typography.Text>
-                {page.page_number === 1 && <Tag color="magenta">钩子封面</Tag>}
-                {page.page_role && page.page_role !== '钩子封面' && (
-                  <Tag color={PAGE_ROLE_COLORS[page.page_role] ?? 'default'}>
-                    {page.page_role}
-                  </Tag>
-                )}
-                {page.is_flashback && <Tag color="blue">回忆页</Tag>}
-                {page.camera_angle && <Tag color="cyan">{page.camera_angle}</Tag>}
-                <Tag>{page.shot_type}</Tag>
-                <Typography.Text
-                  type="secondary"
-                  className="storyboard-page-summary"
-                  title={page.story_content}
-                >
-                  {page.story_content}
-                </Typography.Text>
-              </div>
-            ),
-            extra: (
-              <Space
-                size="small"
-                onClick={(event) => event.stopPropagation()}
-              >
-                {/* 标题栏直接上传成品图，无需展开折叠面板；交互与展开区一致（弹窗选择或粘贴） */}
-                <ImageUpload
-                  variant="button"
-                  imageUrl={pageImageSrc(page)}
-                  uploadText="上传成品图"
-                  replaceText="替换图片"
-                  maxSizeBytes={PAGE_IMAGE_MAX_SIZE}
-                  onUpload={(file) => handleUploadImage(page, file)}
-                  disabled={imageBusy[page.page_number]}
-                />
-                <Button
-                  size="small"
-                  icon={<CopyOutlined />}
-                  onClick={() => void handleCopyPrompt(page)}
-                >
-                  复制提示词
-                </Button>
-                <Button
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => openEdit(page)}
-                >
-                  编辑
-                </Button>
-                <Button
-                  size="small"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => handleDeletePage(page)}
-                >
-                  删除
-                </Button>
-              </Space>
-            ),
-            children: (
-              // 纯文案排版：标签在上、内容在下，不使用表格，便于直接阅读与复制
-              <div className="storyboard-script">
-                <div className="script-field">
-                  <span className="script-label">成品图</span>
-                  <ImageUpload
-                    variant="thumb"
-                    imageUrl={pageImageSrc(page)}
-                    uploadText="上传成品图并标记完成"
-                    replaceText="替换图片"
-                    maxSizeBytes={PAGE_IMAGE_MAX_SIZE}
-                    onUpload={(file) => handleUploadImage(page, file)}
-                    onRemove={() => handleDeleteImage(page)}
-                    disabled={imageBusy[page.page_number]}
-                  />
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">本页故事内容</span>
-                  <p className="script-text">{page.story_content}</p>
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">出场人物</span>
-                  {page.characters.length > 0 ? (
-                    <Space wrap size={[4, 4]}>
-                      {page.characters.map((name) => (
-                        <Tag key={name}>{name}</Tag>
-                      ))}
-                    </Space>
-                  ) : (
-                    <Typography.Text type="secondary">无</Typography.Text>
-                  )}
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">人物设定回顾</span>
-                  <p className="script-text">{page.character_review}</p>
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">场景描述</span>
-                  <p className="script-text">{page.scene}</p>
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">动作与状态</span>
-                  <p className="script-text">{page.action_state}</p>
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">变化说明</span>
-                  <p className="script-text">{page.change_note}</p>
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">主要旁白</span>
-                  <p className="script-text">{page.narration_main}</p>
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">标红关键词</span>
-                  {page.narration_highlight ? (
-                    <div>
-                      <Tag color="red">{page.narration_highlight}</Tag>
-                    </div>
-                  ) : (
-                    <Typography.Text type="secondary">无</Typography.Text>
-                  )}
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">副旁白</span>
-                  <p className="script-text">{page.narration_sub}</p>
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">对话气泡</span>
-                  {page.dialogues.length > 0 ? (
-                    page.dialogues.map((line, index) => (
-                      <p className="script-text script-dialogue" key={index}>
-                        {line}
-                      </p>
-                    ))
-                  ) : (
-                    <Typography.Text type="secondary">无</Typography.Text>
-                  )}
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">镜头机位 / 景别</span>
-                  <div>
-                    <Space size={4}>
-                      {page.camera_angle ? (
-                        <Tag color="cyan">{page.camera_angle}</Tag>
-                      ) : (
-                        <Typography.Text type="secondary">
-                          机位未设置
-                        </Typography.Text>
-                      )}
-                      <Tag>{page.shot_type}</Tag>
-                    </Space>
-                  </div>
-                </div>
-
-                <div className="script-field">
-                  <span className="script-label">
-                    生图提示词
-                    <Button
-                      size="small"
-                      type="link"
-                      icon={<CopyOutlined />}
-                      onClick={() => void handleCopyPrompt(page)}
-                      style={{ paddingLeft: 0 }}
-                    >
-                      复制提示词
-                    </Button>
-                  </span>
-                  <div className="prompt-sections">
-                    {parseImagePrompt(
-                      page.image_prompt,
-                      page.dialogues,
-                      page.camera_angle,
-                    ).map(
-                      (section, index) => (
-                        <div
-                          className="prompt-section"
-                          key={`${section.label}-${index}`}
-                        >
-                          <span className="prompt-section-label">
-                            【{section.label}】
-                          </span>
-                          <p className="prompt-section-text">{section.text}</p>
-                        </div>
-                      ),
+          items={[
+            ...chapterGroups.map((group) => {
+              const done = group.pages.filter((page) => page.image_url).length
+              const selectedCount = group.pages.filter((page) =>
+                selectedPageNumbers.has(page.page_number),
+              ).length
+              const allSelected =
+                group.pages.length > 0 &&
+                selectedCount === group.pages.length
+              const firstMapping = group.chapter.mapping_page_numbers[0]
+              const lastMapping =
+                group.chapter.mapping_page_numbers[
+                  group.chapter.mapping_page_numbers.length - 1
+                ]
+              return {
+                key: group.key,
+                className: 'storyboard-chapter',
+                label: (
+                  <div className="storyboard-chapter-label">
+                    <Checkbox
+                      checked={allSelected}
+                      indeterminate={
+                        !allSelected && selectedCount > 0
+                      }
+                      disabled={group.pages.length === 0}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        setPagesSelected(group.pages, event.target.checked)
+                      }
+                    />
+                    <Typography.Text strong>
+                      第 {group.chapter.chapter_number} 章 ·{' '}
+                      {group.chapter.title}
+                    </Typography.Text>
+                    <Tag color="blue">正文 {group.pages.length} 页</Tag>
+                    {group.pages.length > 0 && (
+                      <Tag
+                        color={
+                          done === group.pages.length ? 'success' : 'default'
+                        }
+                      >
+                        已完成 {done}/{group.pages.length}
+                      </Tag>
+                    )}
+                    {firstMapping != null && (
+                      <Tag>
+                        对照第 {firstMapping}
+                        {lastMapping != null && lastMapping !== firstMapping
+                          ? `–${lastMapping}`
+                          : ''}{' '}
+                        段
+                      </Tag>
+                    )}
+                    {group.pages.length === 0 && (
+                      <Tag color="orange">待生成脚本</Tag>
                     )}
                   </div>
-                </div>
-              </div>
-            ),
-          }))}
+                ),
+                children:
+                  group.pages.length > 0 ? (
+                    renderPageCollapse(group.pages)
+                  ) : (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description="本章还没有正文分镜页，请到「章节发布」复制脚本指令生成"
+                    />
+                  ),
+              }
+            }),
+            ...(unassignedPages.length > 0
+              ? [
+                  {
+                    key: 'unassigned',
+                    className: 'storyboard-chapter',
+                    label: (
+                      <div className="storyboard-chapter-label">
+                        <Checkbox
+                          checked={unassignedPages.every((page) =>
+                            selectedPageNumbers.has(page.page_number),
+                          )}
+                          indeterminate={
+                            unassignedPages.some((page) =>
+                              selectedPageNumbers.has(page.page_number),
+                            ) &&
+                            !unassignedPages.every((page) =>
+                              selectedPageNumbers.has(page.page_number),
+                            )
+                          }
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) =>
+                            setPagesSelected(
+                              unassignedPages,
+                              event.target.checked,
+                            )
+                          }
+                        />
+                        <Typography.Text strong>未分章</Typography.Text>
+                        <Tag>{unassignedPages.length} 页</Tag>
+                        <Typography.Text type="secondary">
+                          这些页没有归入章节，请到「章节发布」检查章节规划
+                        </Typography.Text>
+                      </div>
+                    ),
+                    children: renderPageCollapse(unassignedPages),
+                  },
+                ]
+              : []),
+          ]}
         />
+      ) : (
+        renderPageCollapse(breakdown.pages)
       )}
 
       {/* 原文 / 优化文对比与 AI 改动解读 */}
@@ -698,6 +1132,8 @@ export default function StoryboardTab({
         storyId={story.id}
         original={story.content}
         optimized={breakdown.optimized_content}
+        pages={breakdown.pages}
+        mapping={breakdown.mapping}
         aiEnabled={aiEnabled}
         isStale={breakdown.is_content_stale}
         onClose={() => setCompareOpen(false)}
@@ -705,7 +1141,11 @@ export default function StoryboardTab({
 
       {/* 单页编辑 */}
       <Modal
-        title={editingPage ? `编辑第 ${editingPage.page_number} 页` : '编辑分镜页'}
+        title={
+          editingPage
+            ? `编辑${pageDisplayLabel(editingPage, breakdown.chapters)}`
+            : '编辑分镜页'
+        }
         open={editOpen}
         onCancel={() => setEditOpen(false)}
         onOk={() => void savePage()}
@@ -723,7 +1163,7 @@ export default function StoryboardTab({
           <Form.Item
             name="page_role"
             label="页面作用"
-            extra="第 1 页固定为钩子封面；其余页选择本页在故事中的主要作用，会显示在标题栏。"
+            extra="新流程不生成钩子页；这里只标注本页在故事中的主要作用，会显示在标题栏。"
           >
             <Select
               allowClear
@@ -790,7 +1230,11 @@ export default function StoryboardTab({
             <Input maxLength={200} showCount />
           </Form.Item>
 
-          <Form.Item name="narration_highlight" label="标红关键词">
+          <Form.Item
+            name="narration_highlight"
+            label="标红关键词"
+            extra="必须是主要旁白或副旁白中的连续片段；生图时会内嵌在该句标红，不会单独占一行。"
+          >
             <Input maxLength={100} showCount placeholder="需要标红强调的词" />
           </Form.Item>
 
@@ -798,6 +1242,7 @@ export default function StoryboardTab({
             name="narration_sub"
             label="副旁白"
             rules={[{ required: true, message: '请填写副旁白' }]}
+            extra="1–2 行，少于 50 个汉字（标点不计）；以「本页内容」为底稿，第一行交代情境，第二行写结果/情绪。需要两行时直接换行。"
           >
             <Input.TextArea rows={2} maxLength={4000} showCount />
           </Form.Item>
@@ -849,7 +1294,7 @@ export default function StoryboardTab({
             name="image_prompt"
             label="生图提示词"
             rules={[{ required: true, message: '请填写生图提示词' }]}
-            extra="角色外形用 {{角色名}} 变量引用角色设定卡；变量在外部生图 AI 中绑定参考图后再使用。"
+            extra="角色外形用 {{角色名}} 变量引用角色设定卡；【文字区】由上方旁白字段与对话气泡自动生成，复制时以结构化字段为准。"
           >
             <Input.TextArea rows={8} maxLength={8000} showCount />
           </Form.Item>

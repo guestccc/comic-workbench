@@ -1,20 +1,23 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   App,
   Button,
   Card,
+  Empty,
   Form,
-  Image,
   Input,
   Modal,
   Select,
-  Space,
-  Table,
+  Skeleton,
+  Tag,
+  Tooltip,
   Typography,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
 import {
   CopyOutlined,
+  DeleteOutlined,
+  EditOutlined,
   EyeOutlined,
   PlusOutlined,
 } from '@ant-design/icons'
@@ -26,13 +29,73 @@ import { api, ApiError, getErrorMessage } from '../api/client'
 import type { ArtStyle, Story } from '../types'
 import { copyText } from '../utils/clipboard'
 import {
-  buildStoryBreakdownPrompt,
+  buildStoryMappingPrompt,
   getBreakdownBlockedReason,
 } from '../utils/storyBreakdown'
 
 /** 故事名可留空，列表中统一显示占位文案。 */
 function displayStoryName(name: string | null | undefined): string {
   return name?.trim() || '未命名故事'
+}
+
+/** 画风状态标签：正常 / 已失效 / 未选择。 */
+function ArtStyleTag({ story }: { story: Story }) {
+  if (story.art_style_name) {
+    return <Tag color="geekblue">{story.art_style_name}</Tag>
+  }
+  if (story.art_style_id) {
+    return <Tag color="red">画风已失效</Tag>
+  }
+  return <Tag>未选择画风</Tag>
+}
+
+/**
+ * 瀑布流布局。
+ *
+ * 按容器宽度计算栏数（每栏最小 240px），再把卡片按顺序轮流分到各栏，
+ * 这样从左到右、从上到下的阅读顺序与列表顺序一致；
+ * 各栏高度不同，保留瀑布流的错落感。
+ */
+function StoryMasonry({ children }: { children: ReactNode[] }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [columnCount, setColumnCount] = useState(3)
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const MIN_CARD_WIDTH = 240
+    const GAP = 16
+    const update = () => {
+      const width = container.clientWidth
+      setColumnCount(
+        Math.max(1, Math.floor((width + GAP) / (MIN_CARD_WIDTH + GAP))),
+      )
+    }
+
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [])
+
+  const columns: ReactNode[][] = Array.from(
+    { length: columnCount },
+    () => [],
+  )
+  children.forEach((child, index) => {
+    columns[index % columnCount].push(child)
+  })
+
+  return (
+    <div className="story-masonry" ref={containerRef}>
+      {columns.map((items, index) => (
+        <div className="story-masonry-column" key={index}>
+          {items}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 interface StoryFormValues {
@@ -85,7 +148,13 @@ export default function StoriesPage() {
       (story) =>
         story.name.toLowerCase().includes(query) ||
         story.content.toLowerCase().includes(query) ||
-        (story.art_style_name ?? '').toLowerCase().includes(query),
+        (story.art_style_name ?? '').toLowerCase().includes(query) ||
+        (story.zhihu_title ?? '').toLowerCase().includes(query) ||
+        (story.zhihu_alias ?? '').toLowerCase().includes(query) ||
+        story.zhihu_aliases.some((alias) =>
+          alias.toLowerCase().includes(query),
+        ) ||
+        (story.zhihu_article_id ?? '').includes(query),
     )
   }, [stories, keyword])
 
@@ -143,16 +212,16 @@ export default function StoriesPage() {
     }
   }
 
-  // 只复制故事 ID；故事名、原文与画风由 Claude 在项目内自行查询数据库
-  const handleCopyBreakdown = async (story: Story) => {
+  // 只复制故事 ID；故事名、原文、画风与 mapping 由 Claude 在项目内自行查询数据库
+  const handleCopyMapping = async (story: Story) => {
     const blockedReason = getBreakdownBlockedReason(story)
     if (blockedReason) {
       message.warning(blockedReason)
       return
     }
     try {
-      await copyText(buildStoryBreakdownPrompt(story.id))
-      message.success('拆解指令已复制（Claude 会一次性生成角色卡与全部分镜并写回）')
+      await copyText(buildStoryMappingPrompt(story.id))
+      message.success('分镜对照指令已复制（Claude 会先写回对照表，确认后再生成脚本）')
     } catch {
       message.error('复制失败，请手动选中后复制')
     }
@@ -181,108 +250,11 @@ export default function StoriesPage() {
     })
   }
 
-  const columns: ColumnsType<Story> = [
-    {
-      title: '封面',
-      dataIndex: 'cover_url',
-      width: 80,
-      render: (coverUrl: string | null) =>
-        coverUrl ? (
-          <Image
-            src={coverUrl}
-            width={48}
-            height={64}
-            className="cover-thumb"
-            preview={{ mask: '预览' }}
-          />
-        ) : (
-          <div className="cover-placeholder">暂无</div>
-        ),
-    },
-    {
-      title: '故事名',
-      dataIndex: 'name',
-      width: 180,
-      render: (name: string, story) => (
-        <Typography.Link
-          strong={Boolean(name?.trim())}
-          type={name?.trim() ? undefined : 'secondary'}
-          onClick={() => navigate(`/stories/${story.id}`)}
-        >
-          {displayStoryName(name)}
-        </Typography.Link>
-      ),
-    },
-    {
-      title: '画风',
-      dataIndex: 'art_style_name',
-      width: 140,
-      render: (name: string | null, story: Story) =>
-        name ? (
-          <Typography.Text>{name}</Typography.Text>
-        ) : story.art_style_id ? (
-          <Typography.Text type="danger">画风已失效</Typography.Text>
-        ) : (
-          <Typography.Text type="secondary">未选择</Typography.Text>
-        ),
-    },
-    {
-      title: '故事原文',
-      dataIndex: 'content',
-      render: (content: string) => (
-        <Typography.Paragraph
-          className="content-preview"
-          ellipsis={{ rows: 2 }}
-          style={{ maxWidth: 460, marginBottom: 0 }}
-        >
-          {content}
-        </Typography.Paragraph>
-      ),
-    },
-    {
-      title: '更新时间',
-      dataIndex: 'updated_at',
-      width: 160,
-      render: (value: string) => dayjs(value).format('YYYY-MM-DD HH:mm'),
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 300,
-      render: (_, story) => (
-        <Space size="small">
-          <Button
-            type="link"
-            size="small"
-            icon={<EyeOutlined />}
-            onClick={() => navigate(`/stories/${story.id}`)}
-          >
-            详情
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            icon={<CopyOutlined />}
-            onClick={() => void handleCopyBreakdown(story)}
-          >
-            复制拆解指令
-          </Button>
-          <Button type="link" size="small" onClick={() => openEdit(story)}>
-            编辑
-          </Button>
-          <Button type="link" size="small" danger onClick={() => handleDelete(story)}>
-            删除
-          </Button>
-        </Space>
-      ),
-    },
-  ]
-
   return (
     <div>
       <PageHeader
         title="故事管理"
-        description="维护故事原文与封面；故事名可留空，拆解时自动补填。为故事选择画风后，可复制拆解指令（只含故事 ID），粘贴到本项目的 Claude Code 中，它会读取原文与画风，一次性生成角色设定卡与全部分镜并写回详情页。生图提示词使用 {{角色名}} 变量，参考垫图由你在外部生图 AI 中自行绑定。"
+        description="维护故事原文与封面；故事名可留空，拆解时自动补填。为故事选择画风后，可复制分镜对照指令（只含故事 ID），粘贴到本项目的 Claude Code 中，它会先按优化文顺序写回「页码 → 原文段落」对照表；到详情页确认后，再复制分镜头脚本指令逐页生成。生图提示词使用 {{角色名}} 变量，参考垫图由你在外部生图 AI 中自行绑定。"
         extra={
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             新建故事
@@ -291,26 +263,128 @@ export default function StoriesPage() {
       />
 
       <Card className="panel">
-        <Input.Search
-          allowClear
-          placeholder="搜索故事名或原文"
-          value={keyword}
-          onChange={(event) => setKeyword(event.target.value)}
-          style={{ maxWidth: 360, marginBottom: 16 }}
-        />
-        <Table<Story>
-          rowKey="id"
-          loading={loading}
-          columns={columns}
-          dataSource={filteredStories}
-          pagination={{
-            pageSize: 8,
-            showSizeChanger: false,
-            showTotal: (total) => `共 ${total} 个故事`,
-          }}
-          scroll={{ x: 1240 }}
-          locale={{ emptyText: '还没有故事，点击右上角「新建故事」开始吧' }}
-        />
+        <div className="story-list-toolbar">
+          <Input.Search
+            allowClear
+            placeholder="搜索故事名、原文、画风、知乎标题、别名或 ID"
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            style={{ maxWidth: 360 }}
+          />
+          <Typography.Text type="secondary">
+            共 {filteredStories.length} 个故事
+          </Typography.Text>
+        </div>
+
+        {loading ? (
+          <StoryMasonry>
+            {Array.from({ length: 6 }).map((_, index) => (
+              <Card key={index} className="story-card">
+                <Skeleton active paragraph={{ rows: 3 }} />
+              </Card>
+            ))}
+          </StoryMasonry>
+        ) : filteredStories.length === 0 ? (
+          <Empty
+            description={
+              keyword.trim()
+                ? '没有匹配的故事'
+                : '还没有故事，点击右上角「新建故事」开始吧'
+            }
+          />
+        ) : (
+          <StoryMasonry>
+            {filteredStories.map((story) => (
+              <Card
+                key={story.id}
+                className="story-card"
+                hoverable
+                onClick={() => navigate(`/stories/${story.id}`)}
+                cover={
+                  story.cover_url ? (
+                    <div className="story-card-cover">
+                      <img
+                        src={story.cover_url}
+                        className="story-card-cover-img"
+                        alt={displayStoryName(story.name)}
+                      />
+                    </div>
+                  ) : (
+                    <div className="story-card-cover story-card-cover-empty">
+                      <span className="story-card-cover-initial">
+                        {displayStoryName(story.name).slice(0, 1)}
+                      </span>
+                      <span className="story-card-cover-hint">暂无封面</span>
+                    </div>
+                  )
+                }
+                actions={[
+                  <Tooltip title="查看详情" key="detail">
+                    <EyeOutlined
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        navigate(`/stories/${story.id}`)
+                      }}
+                    />
+                  </Tooltip>,
+                  <Tooltip title="复制分镜对照指令" key="copy">
+                    <CopyOutlined
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        void handleCopyMapping(story)
+                      }}
+                    />
+                  </Tooltip>,
+                  <Tooltip title="编辑" key="edit">
+                    <EditOutlined
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        openEdit(story)
+                      }}
+                    />
+                  </Tooltip>,
+                  <Tooltip title="删除" key="delete">
+                    <DeleteOutlined
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        handleDelete(story)
+                      }}
+                    />
+                  </Tooltip>,
+                ]}
+              >
+                <div className="story-card-head">
+                  {/* 点击冒泡到整张卡片，由 Card onClick 统一进详情 */}
+                  <Typography.Link
+                    strong
+                    ellipsis
+                    className="story-card-title"
+                  >
+                    {displayStoryName(story.name)}
+                  </Typography.Link>
+                  <ArtStyleTag story={story} />
+                  {story.zhihu_alias ? (
+                    <Tag color="purple">别名：{story.zhihu_alias}</Tag>
+                  ) : story.zhihu_aliases.length > 0 ? (
+                    <Tag color="orange">别名待标注</Tag>
+                  ) : null}
+                </div>
+                <Typography.Paragraph
+                  className="story-card-excerpt"
+                  ellipsis={{ rows: 3 }}
+                >
+                  {story.content}
+                </Typography.Paragraph>
+                <div className="story-card-meta">
+                  <span>
+                    更新 {dayjs(story.updated_at).format('YYYY-MM-DD HH:mm')}
+                  </span>
+                  <span>#{story.id}</span>
+                </div>
+              </Card>
+            ))}
+          </StoryMasonry>
+        )}
       </Card>
 
       <Modal
