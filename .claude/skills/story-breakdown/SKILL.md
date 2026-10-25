@@ -110,7 +110,7 @@ description: 优化故事原文，先按文章顺序产出只读的分镜对照�
    - `image_prompt` 先留空。
 5. **guide 文字**：
    - 非最后一章：`text="关注我，看更多重生爽文"`，`sub_text="下一章：<下一章钩子>"`；
-   - 最后一章：`text="想看后续？主页简介有入口"`，`sub_text="关注我，不迷路"`；
+   - 最后一章：`text="想看后续？来我主页"`，`sub_text="关注我，不迷路"`；
    - `image_prompt` 先留空。
 6. PATCH `/api/stories/<ID>/breakdown` 写入完整 `chapters` 数组；**不要写 pages，不要 PATCH mapping / characters / optimized_content**。
 7. 运行 `.claude/skills/story-breakdown/chapter_check.py --story-id <ID>`：章节覆盖、每章 18 张上限、封面文字字数未通过时先修。

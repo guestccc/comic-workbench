@@ -1,6 +1,8 @@
 import type {
   ArtStyleOptimizePayload,
   ArtStylesPayload,
+  ChapterCoverOptimizePayload,
+  ChapterCoverOptimizeResult,
   CharacterOptimizePayload,
   CharacterSyncItem,
   CharacterSyncResult,
@@ -203,6 +205,16 @@ export const api = {
     request<void>(
       `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/cover/image`,
       { method: 'DELETE' },
+    ),
+  /** AI 优化章节封面：只返回主标题、副标题、画面提示词三项 */
+  optimizeChapterCover: (
+    storyId: number,
+    chapterNumber: number,
+    payload: ChapterCoverOptimizePayload,
+  ) =>
+    request<ChapterCoverOptimizeResult>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/cover/optimize`,
+      { method: 'POST', body: JSON.stringify(payload) },
     ),
   uploadChapterGuide: (storyId: number, chapterNumber: number, file: File) => {
     const formData = new FormData()

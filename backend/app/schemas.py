@@ -282,6 +282,66 @@ class CharacterOptimizeRequest(BaseModel):
         return self
 
 
+class ChapterCoverOptimizeRequest(BaseModel):
+    """AI 优化章节封面：只允许改主标题、副标题与画面提示词。"""
+
+    chapter_title: str = Field(default="", max_length=MAX_CHAPTER_TITLE_LENGTH)
+    cover_label: str = Field(default="", max_length=MAX_CHAPTER_LABEL_LENGTH)
+    cover_main: str = Field(
+        default="", max_length=MAX_PAGE_SHORT_TEXT_LENGTH
+    )
+    cover_sub: str = Field(default="", max_length=MAX_PAGE_TEXT_LENGTH)
+    cover_highlight: str = Field(
+        default="", max_length=MAX_PAGE_HIGHLIGHT_LENGTH
+    )
+    current_prompt: str = Field(
+        default="", max_length=MAX_PAGE_IMAGE_PROMPT_LENGTH
+    )
+    suggestion: str = Field(
+        min_length=1, max_length=MAX_PAGE_TEXT_LENGTH
+    )
+
+    @field_validator(
+        "chapter_title",
+        "cover_label",
+        "cover_main",
+        "cover_sub",
+        "cover_highlight",
+        "current_prompt",
+    )
+    @classmethod
+    def _strip_optional(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("suggestion")
+    @classmethod
+    def _strip_suggestion(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("优化建议不能为空")
+        return value
+
+
+class ChapterCoverOptimizeResult(BaseModel):
+    """章节封面 AI 优化结果：只有三项允许变化。"""
+
+    narration_main: str = Field(
+        min_length=1, max_length=MAX_PAGE_SHORT_TEXT_LENGTH
+    )
+    narration_sub: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    image_prompt: str = Field(
+        min_length=1, max_length=MAX_PAGE_IMAGE_PROMPT_LENGTH
+    )
+
+    @field_validator("narration_main", "narration_sub", "image_prompt")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+
 class CharacterSyncItem(BaseModel):
     """从生图平台同步回来的单个角色：名字用于匹配，外形整体覆盖。"""
 

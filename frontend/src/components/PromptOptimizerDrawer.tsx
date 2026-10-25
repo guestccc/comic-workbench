@@ -83,33 +83,35 @@ export default function PromptOptimizerDrawer({
 
     try {
       const turn = { role: 'user' as const, content: instruction }
-      const stream =
-        mode === 'character'
-          ? streamCharacterOptimize(
-              storyId ?? 0,
-              {
-                character_name: characterName ?? '',
-                character_role: characterRole ?? '',
-                current_appearance: currentPrompt,
-                messages: [...history, turn],
-              },
-              controller.signal,
-            )
-          : mode === 'art_style'
-            ? streamArtStyleOptimize(
-                {
-                  current_style: currentPrompt,
-                  messages: [...history, turn],
-                },
-                controller.signal,
-              )
-            : streamPromptOptimize(
-                {
-                  current_prompt: currentPrompt,
-                  messages: [...history, turn],
-                },
-                controller.signal,
-              )
+      let stream: AsyncGenerator<string, void, void>
+      if (mode === 'character') {
+        stream = streamCharacterOptimize(
+          storyId ?? 0,
+          {
+            character_name: characterName ?? '',
+            character_role: characterRole ?? '',
+            current_appearance: currentPrompt,
+            messages: [...history, turn],
+          },
+          controller.signal,
+        )
+      } else if (mode === 'art_style') {
+        stream = streamArtStyleOptimize(
+          {
+            current_style: currentPrompt,
+            messages: [...history, turn],
+          },
+          controller.signal,
+        )
+      } else {
+        stream = streamPromptOptimize(
+          {
+            current_prompt: currentPrompt,
+            messages: [...history, turn],
+          },
+          controller.signal,
+        )
+      }
 
       for await (const delta of stream) {
         received += delta

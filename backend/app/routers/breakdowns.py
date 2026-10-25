@@ -28,6 +28,8 @@ from ..database import get_db
 from ..errors import AppError
 from ..models import Story, StoryBreakdown
 from ..schemas import (
+    ChapterCoverOptimizeRequest,
+    ChapterCoverOptimizeResult,
     CharacterCard,
     CharacterCardRead,
     CharacterOptimizeRequest,
@@ -43,6 +45,7 @@ from ..schemas import (
 )
 from ..services.deepseek import (
     analyze_optimization_changes,
+    optimize_chapter_cover as generate_chapter_cover_optimization,
     stream_character_optimization,
     sync_character_reviews,
 )
@@ -543,6 +546,115 @@ def optimize_character(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _count_chinese_chars(text: str) -> int:
+    return sum(1 for char in text if "一" <= char <= "鿿")
+
+
+@router.post(
+    "/{story_id}/breakdown/chapters/{chapter_number}/cover/optimize",
+    response_model=ChapterCoverOptimizeResult,
+)
+def optimize_chapter_cover(
+    story_id: int,
+    payload: ChapterCoverOptimizeRequest,
+    chapter_number: int = Path(ge=1, le=MAX_CHAPTERS),
+    db: Session = Depends(get_db),
+) -> ChapterCoverOptimizeResult:
+    """AI 优化章节封面三项：主标题、副标题、画面提示词。"""
+    story = _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(
+            404,
+            "该故事还没有拆解结果，请先完成章节规划",
+            "BREAKDOWN_NOT_FOUND",
+        )
+    chapter = _get_chapter_or_404(breakdown, chapter_number)
+    style = _resolve_story_style(db, story)
+    if style is None:
+        raise AppError(
+            422,
+            "该故事尚未选择有效画风，请先重新选择画风",
+            "ART_STYLE_REQUIRED",
+        )
+
+    api_key, _, _ = resolve_deepseek_key(db)
+    cover = chapter.get("cover") or {}
+    chapter_title = payload.chapter_title or chapter.get("title", "")
+    cover_label = payload.cover_label or cover.get("label", "")
+    cover_main = payload.cover_main or cover.get("narration_main", "")
+    cover_highlight = (
+        payload.cover_highlight or cover.get("narration_highlight", "")
+    )
+    cover_sub = payload.cover_sub or cover.get("narration_sub", "")
+    # AI 调用期间不持有数据库事务
+    db.rollback()
+
+    if api_key is None:
+        raise AppError(
+            409,
+            "尚未配置 DeepSeek API Key，请先到「设置」页面完成配置",
+            "DEEPSEEK_KEY_MISSING",
+        )
+
+    result = generate_chapter_cover_optimization(
+        api_key,
+        story.name or "",
+        chapter_title,
+        style["name"],
+        style["content"],
+        cover_label,
+        cover_main,
+        cover_highlight,
+        cover_sub,
+        payload.current_prompt,
+        payload.suggestion,
+    )
+
+    main_count = _count_chinese_chars(result.narration_main)
+    sub_count = _count_chinese_chars(result.narration_sub)
+    if main_count >= 15:
+        raise AppError(
+            502,
+            f"AI 返回的主标题为 {main_count} 字，超过 15 字，请换个建议重试",
+            "AI_COVER_TEXT_INVALID",
+        )
+    if sub_count >= 35:
+        raise AppError(
+            502,
+            f"AI 返回的副标题为 {sub_count} 字，超过 35 字，请换个建议重试",
+            "AI_COVER_TEXT_INVALID",
+        )
+    if (
+        cover_highlight
+        and cover_highlight not in result.narration_main
+        and cover_highlight not in result.narration_sub
+    ):
+        raise AppError(
+            502,
+            f"AI 结果没有保留标红词「{cover_highlight}」，请换个建议重试",
+            "AI_COVER_HIGHLIGHT_MISSING",
+        )
+    if "【页码】" in result.image_prompt:
+        raise AppError(
+            502,
+            "AI 结果意外包含了【页码】，封面不允许页码，请重试",
+            "AI_COVER_RESULT_INVALID",
+        )
+    for required_text, label in (
+        (cover_label, "顶部小字"),
+        (result.narration_main, "主标题"),
+        (result.narration_sub, "副标题"),
+    ):
+        if required_text and required_text not in result.image_prompt:
+            raise AppError(
+                502,
+                f"AI 返回的画面提示词没有逐字保留{label}，请重试",
+                "AI_COVER_RESULT_INVALID",
+            )
+    return result
 
 
 @router.post(

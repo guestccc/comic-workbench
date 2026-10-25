@@ -567,7 +567,7 @@ ${COMMON_DATA_RULES(apiBase, storyId)}
    - image_prompt 先留空，之后单独生成。
 6. guide 文字：
    - 非最后一章：text=\`关注我，看更多重生爽文\`，sub_text=\`下一章：<下一章钩子>\`；
-   - 最后一章：text=\`想看后续？主页简介有入口\`，sub_text=\`关注我，不迷路\`；
+   - 最后一章：text=\`想看后续？来我主页\`，sub_text=\`关注我，不迷路\`；
    - image_prompt 先留空。
 7. 正文页码按章内 1..N 计算；封面和引导卡不显示页码。
 

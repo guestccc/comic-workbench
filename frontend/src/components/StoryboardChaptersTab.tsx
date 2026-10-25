@@ -18,9 +18,11 @@ import {
   DownOutlined,
   EditOutlined,
   ReloadOutlined,
+  ThunderboltOutlined,
   UpOutlined,
 } from '@ant-design/icons'
 import ImageUpload from './ImageUpload'
+import ChapterCoverOptimizerModal from './ChapterCoverOptimizerModal'
 import { api, getErrorMessage } from '../api/client'
 import type {
   Story,
@@ -100,6 +102,15 @@ export default function StoryboardChaptersTab({
   const [busyKey, setBusyKey] = useState<string | null>(null)
   // 章节默认折叠，标题栏保留进度标签；需要操作时再展开对应章节
   const [activeChapterKeys, setActiveChapterKeys] = useState<string[]>([])
+  const [coverOptimizerOpen, setCoverOptimizerOpen] = useState(false)
+  const [coverOptimizerValues, setCoverOptimizerValues] = useState<{
+    chapterTitle: string
+    coverLabel: string
+    coverMain: string
+    coverSub: string
+    coverHighlight: string
+    imagePrompt: string
+  } | null>(null)
 
   const chapters = breakdown?.chapters ?? []
   const pages = breakdown?.pages ?? []
@@ -289,6 +300,7 @@ export default function StoryboardChaptersTab({
 
   const openEdit = (chapter: StoryboardChapterRead) => {
     setEditing(chapter)
+    setCoverOptimizerOpen(false)
     form.setFieldsValue({
       title: chapter.title,
       cover_label: chapter.cover.label,
@@ -301,6 +313,20 @@ export default function StoryboardChaptersTab({
       guide_prompt: chapter.guide.image_prompt,
     })
     setEditOpen(true)
+  }
+
+  /** 点击时快照表单值，确保刚输入的封面内容一定被带到 AI 优化弹窗。 */
+  const openCoverOptimizer = () => {
+    const values = form.getFieldsValue()
+    setCoverOptimizerValues({
+      chapterTitle: values.title ?? '',
+      coverLabel: values.cover_label ?? '',
+      coverMain: values.cover_main ?? '',
+      coverSub: values.cover_sub ?? '',
+      coverHighlight: values.cover_highlight ?? '',
+      imagePrompt: values.cover_prompt ?? '',
+    })
+    setCoverOptimizerOpen(true)
   }
 
   const saveChapter = async () => {
@@ -734,7 +760,10 @@ export default function StoryboardChaptersTab({
             : '编辑章节'
         }
         open={editOpen}
-        onCancel={() => setEditOpen(false)}
+        onCancel={() => {
+          setCoverOptimizerOpen(false)
+          setEditOpen(false)
+        }}
         onOk={() => void saveChapter()}
         confirmLoading={saving}
         okText="保存"
@@ -772,7 +801,23 @@ export default function StoryboardChaptersTab({
           >
             <Input.TextArea rows={2} maxLength={4000} showCount />
           </Form.Item>
-          <Form.Item name="cover_prompt" label="封面生图提示词">
+          <Form.Item
+            name="cover_prompt"
+            label={
+              <Space size={8}>
+                <span>封面生图提示词</span>
+                <Button
+                  size="small"
+                  type="link"
+                  icon={<ThunderboltOutlined />}
+                  onClick={openCoverOptimizer}
+                >
+                  AI 优化
+                </Button>
+              </Space>
+            }
+            extra="提示词为空也可以直接生成新版；AI 只优化主标题、副标题和画面提示词，顶部小字与标红词不变。结果回填后仍需点击「保存」。"
+          >
             <Input.TextArea rows={5} maxLength={8000} showCount />
           </Form.Item>
 
@@ -796,6 +841,28 @@ export default function StoryboardChaptersTab({
           </Form.Item>
         </Form>
       </Modal>
+
+      <ChapterCoverOptimizerModal
+        open={coverOptimizerOpen}
+        storyId={story.id}
+        chapterNumber={editing?.chapter_number ?? 0}
+        chapterTitle={
+          coverOptimizerValues?.chapterTitle ?? editing?.title ?? ''
+        }
+        coverLabel={coverOptimizerValues?.coverLabel ?? ''}
+        coverMain={coverOptimizerValues?.coverMain ?? ''}
+        coverSub={coverOptimizerValues?.coverSub ?? ''}
+        coverHighlight={coverOptimizerValues?.coverHighlight ?? ''}
+        imagePrompt={coverOptimizerValues?.imagePrompt ?? ''}
+        onClose={() => setCoverOptimizerOpen(false)}
+        onApply={(values) => {
+          form.setFieldsValue({
+            cover_main: values.narration_main,
+            cover_sub: values.narration_sub,
+            cover_prompt: values.image_prompt,
+          })
+        }}
+      />
     </div>
   )
 }

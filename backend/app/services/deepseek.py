@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field, ValidationError
 from ..config import (
     ART_STYLE_OPTIMIZE_MAX_TOKENS,
     ART_STYLE_OPTIMIZE_SYSTEM_PROMPT,
+    CHAPTER_COVER_OPTIMIZE_MAX_TOKENS,
+    CHAPTER_COVER_OPTIMIZE_SYSTEM_PROMPT,
     CHARACTER_OPTIMIZE_MAX_TOKENS,
     CHARACTER_OPTIMIZE_SYSTEM_PROMPT,
     CHARACTER_REVIEW_SYNC_MAX_TOKENS,
@@ -38,6 +40,7 @@ from ..config import (
 )
 from ..errors import AppError
 from ..schemas import (
+    ChapterCoverOptimizeResult,
     GeneratedCopyOption,
     GeneratedCopyOptions,
     StoryOptimizationAnalysis,
@@ -512,6 +515,79 @@ def stream_character_optimization(
         content_label=f"角色「{character_name}」{role_text}的当前外形描述",
         max_tokens=CHARACTER_OPTIMIZE_MAX_TOKENS,
     )
+
+
+def optimize_chapter_cover(
+    api_key: str,
+    story_name: str,
+    chapter_title: str,
+    art_style_name: str,
+    art_style_content: str,
+    cover_label: str,
+    cover_main: str,
+    cover_highlight: str,
+    cover_sub: str,
+    current_prompt: str,
+    suggestion: str,
+) -> ChapterCoverOptimizeResult:
+    """优化章节封面三项：主标题、副标题、画面提示词。"""
+    context = (
+        "\n本次封面上下文：\n"
+        f"- 故事名：{story_name or '未命名'}\n"
+        f"- 章节：{chapter_title or '未命名'}\n"
+        f"- 画风名称：{art_style_name}\n"
+        f"- 画风描述：{art_style_content}\n"
+        f"- 固定顶部小字（不得修改）：{cover_label}\n"
+        f"- 当前主标题：{cover_main}\n"
+        f"- 固定标红词（不得修改）：{cover_highlight or '无'}\n"
+        f"- 当前副标题：{cover_sub}\n"
+        f"- 当前画面提示词：\n{current_prompt}\n"
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": CHAPTER_COVER_OPTIMIZE_SYSTEM_PROMPT + context,
+        },
+        {"role": "user", "content": suggestion},
+    ]
+    response = _send_request(
+        api_key,
+        messages,
+        max_tokens=CHAPTER_COVER_OPTIMIZE_MAX_TOKENS,
+        temperature=PROMPT_OPTIMIZE_TEMPERATURE,
+    )
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise AppError(
+            502, "DeepSeek 返回了无法解析的响应，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+    try:
+        choice = data["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        text = choice["message"]["content"]
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        raise AppError(
+            502, "DeepSeek 返回内容为空，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+    if finish_reason == "length":
+        raise AppError(
+            502, "封面优化结果被截断，请换个更短的建议后重试", "DEEPSEEK_BAD_OUTPUT"
+        )
+    if not isinstance(text, str) or not text.strip():
+        raise AppError(
+            502, "DeepSeek 返回内容为空，请重试", "DEEPSEEK_BAD_OUTPUT"
+        )
+
+    payload = _load_json_object(text, label="封面优化")
+    try:
+        return ChapterCoverOptimizeResult.model_validate(payload)
+    except ValidationError as exc:
+        raise AppError(
+            502,
+            "DeepSeek 返回的封面优化格式不正确，请重试",
+            "DEEPSEEK_BAD_OUTPUT",
+        ) from exc
 
 
 def _load_json_object(text: str, label: str = "文案") -> dict:

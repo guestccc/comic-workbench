@@ -54,6 +54,23 @@ export interface CharacterOptimizePayload {
   messages: PromptOptimizeMessage[]
 }
 
+/** AI 优化章节封面：只允许改主标题、副标题与画面提示词。 */
+export interface ChapterCoverOptimizePayload {
+  chapter_title: string
+  cover_label: string
+  cover_main: string
+  cover_sub: string
+  cover_highlight: string
+  current_prompt: string
+  suggestion: string
+}
+
+export interface ChapterCoverOptimizeResult {
+  narration_main: string
+  narration_sub: string
+  image_prompt: string
+}
+
 /** 从生图平台同步回来的单个角色：名字用于匹配，外形整体覆盖。 */
 export interface CharacterSyncItem {
   name: string
