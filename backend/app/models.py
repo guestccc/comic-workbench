@@ -26,7 +26,6 @@ from .config import (
     MAX_STORY_NAME_LENGTH,
     MAX_ZHIHU_ALIAS_LENGTH,
     MAX_ZHIHU_ARTICLE_ID_LENGTH,
-    MAX_ZHIHU_TITLE_LENGTH,
 )
 
 
@@ -47,7 +46,7 @@ class Setting(Base):
 
 
 class Story(Base):
-    """故事：名称、原文、封面文件名、拆解使用的画风。"""
+    """故事：名称（同时作为知乎原名标题）、原文、封面文件名、拆解使用的画风。"""
 
     __tablename__ = "stories"
 
@@ -58,10 +57,7 @@ class Story(Base):
     # 引用画风列表（app_settings 中的 JSON）里的 id；画风被删除时允许悬空，
     # 读取时解析不到名称/描述，由前端提示重新选择。
     art_style_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # 知乎推广信息：原文标题、原文 ID、在知乎注册的搜索别名
-    zhihu_title: Mapped[str] = mapped_column(
-        String(MAX_ZHIHU_TITLE_LENGTH), default="", nullable=False
-    )
+    # 知乎推广信息：原文 ID、在知乎注册的搜索别名
     zhihu_article_id: Mapped[str] = mapped_column(
         String(MAX_ZHIHU_ARTICLE_ID_LENGTH), default="", nullable=False
     )

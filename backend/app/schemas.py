@@ -64,7 +64,6 @@ from .config import (
     MAX_ZHIHU_ALIASES,
     MAX_ZHIHU_ALIAS_LENGTH,
     MAX_ZHIHU_ARTICLE_ID_LENGTH,
-    MAX_ZHIHU_TITLE_LENGTH,
 )
 
 PostStatus = Literal["draft", "published"]
@@ -456,9 +455,8 @@ class StoryUpdate(StoryCreate):
 
 
 class StoryZhihuUpdate(BaseModel):
-    """更新故事级知乎推广信息；三个字段可单独留空。"""
+    """更新故事级知乎推广信息；知乎原名标题直接取故事名。"""
 
-    zhihu_title: str = Field(default="", max_length=MAX_ZHIHU_TITLE_LENGTH)
     zhihu_article_id: str = Field(
         default="", max_length=MAX_ZHIHU_ARTICLE_ID_LENGTH
     )
@@ -468,7 +466,7 @@ class StoryZhihuUpdate(BaseModel):
         default=None, max_length=MAX_ZHIHU_ALIASES
     )
 
-    @field_validator("zhihu_title", "zhihu_article_id", "zhihu_alias")
+    @field_validator("zhihu_article_id", "zhihu_alias")
     @classmethod
     def _strip(cls, value: str) -> str:
         return value.strip()
@@ -506,20 +504,6 @@ class StoryZhihuUpdate(BaseModel):
         return cleaned
 
 
-class ZhihuAliasSuggestRequest(BaseModel):
-    """可选传入尚未保存的原文标题，方便先在弹窗里生成候选。"""
-
-    title: str | None = Field(default=None, max_length=MAX_ZHIHU_TITLE_LENGTH)
-
-    @field_validator("title")
-    @classmethod
-    def _strip_title(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        return value or None
-
-
 class ZhihuAliasSuggestionsRead(BaseModel):
     aliases: list[str]
 
@@ -536,7 +520,7 @@ class StoryRead(_TimestampMixin):
     # 从画风列表中解析出的名称与描述；画风不存在（已删除）时为 None
     art_style_name: str | None = None
     art_style_content: str | None = None
-    # 知乎推广信息：原文标题 / 原文 ID / 在知乎注册的搜索别名
+    # 知乎推广信息：原文标题直接取故事名（派生值），另有原文 ID / 搜索别名
     zhihu_title: str = ""
     zhihu_article_id: str = ""
     zhihu_alias: str = ""

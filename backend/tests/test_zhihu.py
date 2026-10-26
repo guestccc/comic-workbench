@@ -19,13 +19,12 @@ def test_patch_zhihu_round_trip(client, story):
     response = _patch_zhihu(
         client,
         story["id"],
-        zhihu_title=TITLE,
         zhihu_article_id=ARTICLE_ID,
         zhihu_alias="橘子汽水很甜",
     )
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data["zhihu_title"] == TITLE
+    assert data["zhihu_title"] == story["name"] == "测试故事"
     assert data["zhihu_article_id"] == ARTICLE_ID
     assert data["zhihu_alias"] == "橘子汽水很甜"
 
@@ -34,24 +33,31 @@ def test_patch_zhihu_round_trip(client, story):
     listed = client.get("/api/stories").json()
     assert next(item for item in listed if item["id"] == story["id"])[
         "zhihu_title"
-    ] == TITLE
+    ] == "测试故事"
 
 
-def test_zhihu_alias_validation(client, story):
-    story_id = story["id"]
-
-    # 有别名必须先有原文标题
+def test_zhihu_alias_validation(client):
+    # 故事名为空时不能填写别名（原名标题即故事名）
+    unnamed = client.post(
+        "/api/stories",
+        json={"name": "", "content": "还没有故事名的故事。"},
+    ).json()
     response = _patch_zhihu(
-        client, story_id, zhihu_title="", zhihu_alias="橘子汽水很甜"
+        client, unnamed["id"], zhihu_alias="橘子汽水很甜"
     )
     assert response.status_code == 422
     assert response.json()["code"] == "ZHIHU_TITLE_REQUIRED"
 
-    # 不能复用标题中的连续两个字
+    story = client.post(
+        "/api/stories",
+        json={"name": TITLE, "content": "故事内容。"},
+    ).json()
+    story_id = story["id"]
+
+    # 不能复用故事名中的连续两个字
     response = _patch_zhihu(
         client,
         story_id,
-        zhihu_title=TITLE,
         zhihu_alias="重生之后归家",
     )
     assert response.status_code == 422
@@ -61,7 +67,6 @@ def test_zhihu_alias_validation(client, story):
     response = _patch_zhihu(
         client,
         story_id,
-        zhihu_title=TITLE,
         zhihu_alias="abc",
     )
     assert response.status_code == 422
@@ -69,7 +74,6 @@ def test_zhihu_alias_validation(client, story):
     response = _patch_zhihu(
         client,
         story_id,
-        zhihu_title=TITLE,
         zhihu_alias="一二三四五六七八九",
     )
     assert response.status_code == 422
@@ -78,19 +82,21 @@ def test_zhihu_alias_validation(client, story):
     response = _patch_zhihu(
         client,
         story_id,
-        zhihu_title=TITLE,
         zhihu_article_id="p123",
         zhihu_alias="橘子汽水很甜",
     )
     assert response.status_code == 422
 
 
-def test_multiple_aliases_and_active_selection(client, story):
+def test_multiple_aliases_and_active_selection(client):
+    story = client.post(
+        "/api/stories",
+        json={"name": TITLE, "content": "故事内容。"},
+    ).json()
     story_id = story["id"]
     response = _patch_zhihu(
         client,
         story_id,
-        zhihu_title=TITLE,
         zhihu_article_id=ARTICLE_ID,
         zhihu_aliases=["橘子汽水很甜", "晚风邮局等你"],
         zhihu_alias="",
@@ -104,7 +110,6 @@ def test_multiple_aliases_and_active_selection(client, story):
     response = _patch_zhihu(
         client,
         story_id,
-        zhihu_title=TITLE,
         zhihu_article_id=ARTICLE_ID,
         zhihu_alias="晚风邮局等你",
     )
@@ -117,7 +122,6 @@ def test_multiple_aliases_and_active_selection(client, story):
     response = _patch_zhihu(
         client,
         story_id,
-        zhihu_title=TITLE,
         zhihu_article_id=ARTICLE_ID,
         zhihu_aliases=["橘子汽水很甜"],
         zhihu_alias="晚风邮局等你",
@@ -129,12 +133,49 @@ def test_multiple_aliases_and_active_selection(client, story):
     response = _patch_zhihu(
         client,
         story_id,
-        zhihu_title=TITLE,
         zhihu_aliases=["橘子汽水很甜", "重生之后归家"],
         zhihu_alias="",
     )
     assert response.status_code == 422
     assert response.json()["code"] == "ALIAS_REUSES_TITLE_TEXT"
+
+
+def test_story_rename_respects_aliases(client):
+    """故事名即知乎原名标题，改名后别名仍不能复用新标题的连续两字。"""
+    story = client.post(
+        "/api/stories",
+        json={"name": TITLE, "content": "故事内容。"},
+    ).json()
+    assert (
+        _patch_zhihu(
+            client,
+            story["id"],
+            zhihu_alias="橘子汽水很甜",
+        ).status_code
+        == 200
+    )
+
+    payload = {
+        "name": "橘子花开的时候",
+        "content": "故事内容。",
+        "cover_filename": None,
+        "art_style_id": None,
+    }
+    response = client.put(f"/api/stories/{story['id']}", json=payload)
+    assert response.status_code == 422
+    assert response.json()["code"] == "ALIAS_REUSES_TITLE_TEXT"
+
+    # 已有别名时不能把故事名清空
+    payload["name"] = ""
+    response = client.put(f"/api/stories/{story['id']}", json=payload)
+    assert response.status_code == 422
+    assert response.json()["code"] == "ZHIHU_TITLE_REQUIRED"
+
+    # 不冲突的名字可以正常保存，响应中的知乎标题随之更新
+    payload["name"] = "换一个名字"
+    response = client.put(f"/api/stories/{story['id']}", json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["zhihu_title"] == "换一个名字"
 
 
 def test_zhihu_alias_must_be_unique_locally(client, story):
@@ -147,7 +188,6 @@ def test_zhihu_alias_must_be_unique_locally(client, story):
         _patch_zhihu(
             client,
             story["id"],
-            zhihu_title=TITLE,
             zhihu_alias="橘子汽水很甜",
         ).status_code
         == 200
@@ -155,7 +195,6 @@ def test_zhihu_alias_must_be_unique_locally(client, story):
     response = _patch_zhihu(
         client,
         other["id"],
-        zhihu_title="另一个标题",
         zhihu_alias="橘子汽水很甜",
     )
     assert response.status_code == 409
@@ -170,7 +209,6 @@ def test_alias_update_syncs_saved_post_configs(client):
         _patch_zhihu(
             client,
             story_id,
-            zhihu_title=TITLE,
             zhihu_article_id=ARTICLE_ID,
             zhihu_alias="橘子汽水很甜",
         ).status_code
@@ -187,7 +225,6 @@ def test_alias_update_syncs_saved_post_configs(client):
         _patch_zhihu(
             client,
             story_id,
-            zhihu_title=TITLE,
             zhihu_article_id=ARTICLE_ID,
             zhihu_alias="晚风邮局等你",
         ).status_code
@@ -203,7 +240,6 @@ def test_alias_update_syncs_saved_post_configs(client):
         _patch_zhihu(
             client,
             story_id,
-            zhihu_title=TITLE,
             zhihu_article_id=ARTICLE_ID,
             zhihu_alias="",
         ).status_code
@@ -220,17 +256,8 @@ def test_alias_suggestions_filter_invalid_and_duplicates(
 ):
     story = client.post(
         "/api/stories",
-        json={"name": "建议测试", "content": "故事内容。"},
+        json={"name": TITLE, "content": "故事内容。"},
     ).json()
-    assert (
-        _patch_zhihu(
-            client,
-            story["id"],
-            zhihu_title=TITLE,
-            zhihu_article_id=ARTICLE_ID,
-        ).status_code
-        == 200
-    )
     mock_deepseek["response"] = make_response(
         raw_content=json.dumps(
             {
@@ -261,10 +288,14 @@ def test_alias_suggestions_filter_invalid_and_duplicates(
     assert TITLE in messages[1]["content"]
 
 
-def test_alias_suggestions_require_title_and_key(
-    client, story, configure_key, mock_deepseek
+def test_alias_suggestions_require_story_name_and_key(
+    client, configure_key, mock_deepseek
 ):
-    # 没有原文标题
+    # 没有故事名（即知乎原名标题）时不调用模型
+    story = client.post(
+        "/api/stories",
+        json={"name": "", "content": "故事内容。"},
+    ).json()
     response = client.post(
         f"/api/stories/{story['id']}/zhihu/alias-suggestions"
     )
@@ -284,7 +315,6 @@ def test_generate_copy_includes_zhihu_alias(
         _patch_zhihu(
             client,
             story["id"],
-            zhihu_title=TITLE,
             zhihu_article_id=ARTICLE_ID,
             zhihu_alias="橘子汽水很甜",
         ).status_code

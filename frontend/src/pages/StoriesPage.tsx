@@ -149,7 +149,6 @@ export default function StoriesPage() {
         story.name.toLowerCase().includes(query) ||
         story.content.toLowerCase().includes(query) ||
         (story.art_style_name ?? '').toLowerCase().includes(query) ||
-        (story.zhihu_title ?? '').toLowerCase().includes(query) ||
         (story.zhihu_alias ?? '').toLowerCase().includes(query) ||
         story.zhihu_aliases.some((alias) =>
           alias.toLowerCase().includes(query),
@@ -266,7 +265,7 @@ export default function StoriesPage() {
         <div className="story-list-toolbar">
           <Input.Search
             allowClear
-            placeholder="搜索故事名、原文、画风、知乎标题、别名或 ID"
+            placeholder="搜索故事名、原文、画风、知乎别名或 ID"
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             style={{ maxWidth: 360 }}

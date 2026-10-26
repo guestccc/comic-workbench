@@ -25,7 +25,7 @@ def title_bigrams(title: str) -> set[str]:
 
 
 def validate_alias(title: str, alias: str) -> None:
-    """校验别名格式，并禁止复用原文标题里的连续两个字。"""
+    """校验别名格式，并禁止复用故事名（知乎原名标题）里的连续两个字。"""
     if not ALIAS_PATTERN.fullmatch(alias):
         raise AppError(
             422,
@@ -35,7 +35,7 @@ def validate_alias(title: str, alias: str) -> None:
     if not title:
         raise AppError(
             422,
-            "填写别名前请先填写知乎原文标题",
+            "填写别名前请先在「故事管理」中填写故事名（知乎原名标题）",
             "ZHIHU_TITLE_REQUIRED",
         )
     overlap = title_bigrams(title) & {

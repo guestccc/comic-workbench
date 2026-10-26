@@ -133,13 +133,10 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
-  suggestZhihuAliases: (id: number, title: string) =>
+  suggestZhihuAliases: (id: number) =>
     request<ZhihuAliasSuggestions>(
       `/api/stories/${id}/zhihu/alias-suggestions`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ title }),
-      },
+      { method: 'POST' },
     ),
 
   // 故事拆解结果（由 Claude Code 技能写回，页面可编辑）

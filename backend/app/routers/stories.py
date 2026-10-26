@@ -23,7 +23,6 @@ from ..schemas import (
     StoryRead,
     StoryUpdate,
     StoryZhihuUpdate,
-    ZhihuAliasSuggestRequest,
     ZhihuAliasSuggestionsRead,
 )
 from ..services.deepseek import generate_zhihu_aliases
@@ -34,6 +33,7 @@ from ..services.zhihu import (
     validate_alias,
 )
 from ..services.files import (
+    chapter_asset_url,
     delete_cover_file,
     delete_group_photo,
     delete_story_chapter_assets,
@@ -74,13 +74,15 @@ def _to_story_read(
     画风被删除后 art_style_id 仍保留（悬空引用），此时名称与描述为 None，
     由前端提示用户重新选择，避免静默丢失用户的选择记录。
 
-    封面：优先使用单独上传的封面；没有时默认取第 1 页镜头的成品图，
-    这样拆完分镜、出过图的故事在列表里自然就有封面。
+    封面：优先使用单独上传的封面；没有时默认取第 1 章封面，再没有就取
+    第 1 页镜头的成品图，这样拆完章节、出过图的故事在列表里自然就有封面。
     """
     style = styles.get(story.art_style_id) if story.art_style_id else None
     cover_url = (
         f"/uploads/{story.cover_filename}" if story.cover_filename else None
     )
+    if cover_url is None:
+        cover_url = chapter_asset_url(upload_dir, story.id, 1, "cover")
     if cover_url is None:
         cover_url = page_image_url(upload_dir, story.id, 1)
     aliases = list(story.zhihu_aliases or [])
@@ -95,7 +97,8 @@ def _to_story_read(
         art_style_id=story.art_style_id,
         art_style_name=style["name"] if style else None,
         art_style_content=style["content"] if style else None,
-        zhihu_title=story.zhihu_title,
+        # 知乎原名标题就是故事名，不单独存储，避免两处标题漂移
+        zhihu_title=story.name,
         zhihu_article_id=story.zhihu_article_id,
         zhihu_alias=story.zhihu_alias,
         zhihu_aliases=aliases,
@@ -109,6 +112,29 @@ def _get_story_or_404(db: Session, story_id: int) -> Story:
     if story is None:
         raise AppError(404, "故事不存在或已被删除", "STORY_NOT_FOUND")
     return story
+
+
+def _validate_name_change_for_aliases(story: Story, new_name: str) -> None:
+    """故事名就是知乎原名标题；改名后仍要满足别名复用规则。
+
+    旧候选别名可能不符合 6–8 字规则，这类历史数据不阻断改名；格式合法的
+    别名如果与新故事名复用连续两个字，则拒绝改名，避免静默破坏 Z-02。
+    """
+    aliases = list(story.zhihu_aliases or [])
+    if story.zhihu_alias and story.zhihu_alias not in aliases:
+        aliases.append(story.zhihu_alias)
+    if not aliases:
+        return
+    title = new_name.strip()
+    if not title:
+        raise AppError(
+            422,
+            "该故事已有知乎别名，不能清空故事名（知乎原名标题）",
+            "ZHIHU_TITLE_REQUIRED",
+        )
+    for alias in aliases:
+        if ALIAS_PATTERN.fullmatch(alias):
+            validate_alias(title, alias)
 
 
 def _validate_alias_unique(
@@ -193,6 +219,8 @@ def update_story(
 
     styles = _load_art_styles(db)
     _validate_art_style_id(payload.art_style_id, styles)
+    if payload.name != story.name:
+        _validate_name_change_for_aliases(story, payload.name)
 
     story.name = payload.name
     story.content = payload.content
@@ -215,7 +243,10 @@ def update_story_zhihu(
     request: Request,
     db: Session = Depends(get_db),
 ) -> StoryRead:
-    """保存知乎原文标题、原文 ID 与搜索别名，并同步已保存文案的开头。"""
+    """保存知乎原文 ID 与搜索别名，并同步已保存文案的开头。
+
+    知乎原名标题不再单独录入，统一使用故事名；别名复用校验也基于故事名。
+    """
     story = _get_story_or_404(db, story_id)
     aliases = (
         list(payload.zhihu_aliases)
@@ -230,12 +261,12 @@ def update_story_zhihu(
             f"候选别名最多保存 {MAX_ZHIHU_ALIASES} 个",
             "TOO_MANY_ZHIHU_ALIASES",
         )
+    title = story.name.strip()
     for alias in aliases:
-        validate_alias(payload.zhihu_title, alias)
+        validate_alias(title, alias)
     _validate_alias_unique(db, story_id, payload.zhihu_alias)
 
     old_alias = story.zhihu_alias
-    story.zhihu_title = payload.zhihu_title
     story.zhihu_article_id = payload.zhihu_article_id
     story.zhihu_alias = payload.zhihu_alias
     story.zhihu_aliases = aliases
@@ -274,21 +305,18 @@ def update_story_zhihu(
 )
 def suggest_zhihu_aliases(
     story_id: int,
-    payload: ZhihuAliasSuggestRequest | None = None,
     db: Session = Depends(get_db),
 ) -> ZhihuAliasSuggestionsRead:
     """用 DeepSeek 生成 6 个候选别名，并过滤标题文字/本地重复。
 
-    payload.title 可传入弹窗里尚未保存的标题；不传时使用故事已保存标题。
+    知乎原名标题就是故事名；故事名为空时无法保证别名不复用原标题文案。
     """
     story = _get_story_or_404(db, story_id)
-    title = (
-        payload.title if payload is not None and payload.title else story.zhihu_title
-    ).strip()
+    title = story.name.strip()
     if not title:
         raise AppError(
             422,
-            "请先填写知乎原文标题，再生成别名",
+            "请先在「故事管理」中填写故事名（知乎原名标题），再生成别名",
             "ZHIHU_TITLE_REQUIRED",
         )
 

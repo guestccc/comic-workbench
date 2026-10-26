@@ -100,8 +100,7 @@ export interface Story {
   /** 后端解析出的画风名称/描述；画风已删除时均为 null */
   art_style_name: string | null
   art_style_content: string | null
-  /** 知乎推广信息：原文标题 / 原文 ID / 在知乎注册的搜索别名 */
-  zhihu_title: string
+  /** 知乎推广信息：原文 ID / 在知乎注册的搜索别名；原名标题即故事名 */
   zhihu_article_id: string
   zhihu_alias: string
   /** 候选别名；zhihu_alias 是最终使用并写进正文的那一个 */
@@ -319,9 +318,8 @@ export interface StoryChapterPostConfig {
   updated_at: string
 }
 
-/** 更新故事级知乎推广信息。 */
+/** 更新故事级知乎推广信息；原名标题直接使用故事名，不单独提交。 */
 export interface StoryZhihuPayload {
-  zhihu_title: string
   zhihu_article_id: string
   zhihu_alias: string
   zhihu_aliases: string[]

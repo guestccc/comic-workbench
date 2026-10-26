@@ -29,7 +29,6 @@ interface ZhihuInfoCardProps {
 }
 
 interface ZhihuFormValues {
-  zhihu_title: string
   zhihu_article_id: string
   zhihu_alias: string
   zhihu_aliases: string[]
@@ -40,7 +39,7 @@ const ALIAS_PATTERN = /^[一-鿿]{6,8}$/
 /**
  * 故事级知乎推广信息卡片。
  *
- * 集中展示原文标题、原文 ID 与搜索别名，避免用户忘记三者的对应关系；
+ * 知乎原名标题直接使用故事名，这里只维护原文 ID 与搜索别名；
  * 别名用 DeepSeek 生成候选，但最终以用户在知乎注册的结果为准。
  */
 export default function ZhihuInfoCard({
@@ -88,9 +87,10 @@ export default function ZhihuInfoCard({
     }
   }
 
+  const storyTitle = story.name.trim()
+
   const openEdit = () => {
     form.setFieldsValue({
-      zhihu_title: story.zhihu_title,
       zhihu_article_id: story.zhihu_article_id,
       zhihu_alias: story.zhihu_alias,
       zhihu_aliases: storedAliases,
@@ -99,14 +99,13 @@ export default function ZhihuInfoCard({
   }
 
   const handleGenerateAliases = async () => {
-    const title = (form.getFieldValue('zhihu_title') ?? '').trim()
-    if (!title) {
-      message.warning('请先填写知乎原文标题，再生成别名')
+    if (!storyTitle) {
+      message.warning('请先在「故事管理」中填写故事名（知乎原名标题），再生成别名')
       return
     }
     setGenerating(true)
     try {
-      const result = await api.suggestZhihuAliases(story.id, title)
+      const result = await api.suggestZhihuAliases(story.id)
       if (result.aliases.length === 0) {
         message.warning('没有生成可用别名，请手动填写')
         return
@@ -146,10 +145,17 @@ export default function ZhihuInfoCard({
     } catch {
       return
     }
+    const hasAlias =
+      Boolean((values.zhihu_alias ?? '').trim()) ||
+      (values.zhihu_aliases ?? []).some((alias) => alias.trim())
+    if (hasAlias && !storyTitle) {
+      message.warning('请先在「故事管理」中填写故事名（知乎原名标题）')
+      return
+    }
+
     setSaving(true)
     try {
       const updated = await api.updateStoryZhihu(story.id, {
-        zhihu_title: (values.zhihu_title ?? '').trim(),
         zhihu_article_id: (values.zhihu_article_id ?? '').trim(),
         zhihu_alias: (values.zhihu_alias ?? '').trim(),
         zhihu_aliases: (values.zhihu_aliases ?? []).map((alias) =>
@@ -211,15 +217,22 @@ export default function ZhihuInfoCard({
         )}
 
         <div className="zhihu-info-row">
-          <span className="zhihu-info-label">原文标题</span>
-          <Typography.Text className="zhihu-info-value">
-            {story.zhihu_title || '未填写'}
-          </Typography.Text>
+          <span className="zhihu-info-label">知乎原名标题</span>
+          {storyTitle ? (
+            <Typography.Text className="zhihu-info-value">
+              {storyTitle}
+            </Typography.Text>
+          ) : (
+            <Typography.Text type="secondary" className="zhihu-info-value">
+              未填写（即故事名，请先在「故事管理」中填写）
+            </Typography.Text>
+          )}
           <Button
             size="small"
             type="text"
             icon={<CopyOutlined />}
-            onClick={() => void copy(story.zhihu_title, '原文标题')}
+            disabled={!storyTitle}
+            onClick={() => void copy(storyTitle, '知乎原名标题')}
           />
         </div>
 
@@ -318,37 +331,17 @@ export default function ZhihuInfoCard({
         destroyOnHidden
       >
         <Form form={form} layout="vertical" preserve={false}>
-          <Form.Item
-            name="zhihu_title"
-            label="知乎原文标题"
-            rules={[
-              {
-                validator: (_, value: string) => {
-                  const title = (value ?? '').trim()
-                  const alias = (
-                    form.getFieldValue('zhihu_alias') ?? ''
-                  ).trim()
-                  const aliases =
-                    (form.getFieldValue('zhihu_aliases') as
-                      | string[]
-                      | undefined) ?? []
-                  if ((alias || aliases.length > 0) && !title) {
-                    return Promise.reject(
-                      new Error('填写别名时，原文标题不能为空'),
-                    )
-                  }
-                  return Promise.resolve()
-                },
-              },
-            ]}
-            extra="别名不能连续使用这个标题里的任意两个字。"
-          >
-            <Input
-              maxLength={300}
-              showCount
-              placeholder="例如：重生后我嫁给了渣男"
-            />
-          </Form.Item>
+          <Alert
+            type={storyTitle ? 'info' : 'warning'}
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="知乎原名标题就是故事名"
+            description={
+              storyTitle
+                ? `当前标题：${storyTitle}。别名不能连续使用标题里的任意两个字；要改标题请到「故事管理」修改故事名。`
+                : '当前故事名为空，请先在「故事管理」中填写故事名，再设置别名。'
+            }
+          />
 
           <Form.Item
             name="zhihu_article_id"
@@ -412,6 +405,13 @@ export default function ZhihuInfoCard({
                       new Error('候选别名不能重复'),
                     )
                   }
+                  if (aliases.length > 0 && !storyTitle) {
+                    return Promise.reject(
+                      new Error(
+                        '填写别名前请先在「故事管理」中填写故事名（知乎原名标题）',
+                      ),
+                    )
+                  }
                   return Promise.resolve()
                 },
               },
@@ -463,9 +463,11 @@ export default function ZhihuInfoCard({
                       new Error('最终别名必须先从候选别名里添加'),
                     )
                   }
-                  if (!(form.getFieldValue('zhihu_title') ?? '').trim()) {
+                  if (!storyTitle) {
                     return Promise.reject(
-                      new Error('填写最终别名时，原文标题不能为空'),
+                      new Error(
+                        '填写最终别名前请先在「故事管理」中填写故事名（知乎原名标题）',
+                      ),
                     )
                   }
                   return Promise.resolve()

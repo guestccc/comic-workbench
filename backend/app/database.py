@@ -57,12 +57,7 @@ def apply_schema_migrations(engine: Engine) -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE stories ADD COLUMN art_style_id VARCHAR(64)"
             )
-        # 知乎推广信息：原文标题 / 原文 ID / 搜索别名
-        if columns and "zhihu_title" not in columns:
-            connection.exec_driver_sql(
-                "ALTER TABLE stories ADD COLUMN zhihu_title VARCHAR(300) "
-                "NOT NULL DEFAULT ''"
-            )
+        # 知乎推广信息：原文 ID / 搜索别名；原名标题直接使用故事名
         if columns and "zhihu_article_id" not in columns:
             connection.exec_driver_sql(
                 "ALTER TABLE stories ADD COLUMN zhihu_article_id VARCHAR(64) "

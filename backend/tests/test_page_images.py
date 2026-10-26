@@ -276,6 +276,52 @@ def test_clear_pages_keeps_chapter_assets(client, app_settings):
     assert breakdown["chapters"][0]["guide"]["image_url"] is not None
 
 
+def test_story_cover_prefers_first_chapter_cover(client):
+    """故事封面默认取第 1 章封面；没有时才回退到第一个镜头。"""
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    _configure_chapters(client, story_id)
+    _put_page(
+        client,
+        story_id,
+        1,
+        mapping_page_number=1,
+        chapter_number=1,
+        chapter_page_number=1,
+    )
+    _upload_page_image(client, story_id, 1)
+    page_url = f"/uploads/pages/{story_id}/chapter-1/page-0001.png"
+
+    # 只有第一个镜头时，封面用它兜底
+    assert client.get(f"/api/stories/{story_id}").json()["cover_url"] == page_url
+
+    response = client.post(
+        f"/api/stories/{story_id}/breakdown/chapters/1/cover/image",
+        files={"file": ("cover.png", PNG_BYTES, "image/png")},
+    )
+    assert response.status_code == 200, response.text
+    chapter_cover_url = f"/uploads/chapters/{story_id}/chapter-1-cover.png"
+
+    # 有第 1 章封面后，详情与列表都优先使用它
+    assert (
+        client.get(f"/api/stories/{story_id}").json()["cover_url"]
+        == chapter_cover_url
+    )
+    listed = client.get("/api/stories").json()
+    assert next(item for item in listed if item["id"] == story_id)[
+        "cover_url"
+    ] == chapter_cover_url
+
+    # 删掉章节封面后回到第一个镜头
+    assert (
+        client.delete(
+            f"/api/stories/{story_id}/breakdown/chapters/1/cover/image"
+        ).status_code
+        == 204
+    )
+    assert client.get(f"/api/stories/{story_id}").json()["cover_url"] == page_url
+
+
 def test_export_chapter_images_zip(client):
     """导出按章节分文件夹：封面 → 正文（页序）→ 引导卡。"""
     story, _ = _prepare(client)
