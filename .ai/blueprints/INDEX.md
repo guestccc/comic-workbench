@@ -11,3 +11,5 @@
 | [2026-10-24-ai-generation-and-writeback.md](2026-10-24-ai-generation-and-writeback.md) | Claude / DeepSeek 输出的 Schema、写回边界、校验与失败处理 | 已建立 |
 | [2026-10-24-integrity-and-delivery.md](2026-10-24-integrity-and-delivery.md) | 全部业务不变量、审计入口、测试矩阵、交付检查清单 | 已建立 |
 | [2026-10-24-multi-page-prompt-copy.md](2026-10-24-multi-page-prompt-copy.md) | 分镜页多选、整章全选、批量复制顺序与跨章标签 | 已建立 |
+| [2026-10-27-mapping-review-workbench.md](2026-10-27-mapping-review-workbench.md) | 分镜对照提案草稿、人工决策队列、服务端应用、页码重排与章节安全闸门 | 实施中 |
+| [2026-10-27-content-review-agents.md](2026-10-27-content-review-agents.md) | 内容审阅 agent、视觉单元拆分标准、旁白 / 分镜审片与检查脚本补充 | 实施中 |

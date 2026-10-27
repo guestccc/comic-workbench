@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   App,
@@ -12,14 +12,17 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { CopyOutlined, ReadOutlined } from '@ant-design/icons'
+import { AuditOutlined, CopyOutlined, ReadOutlined } from '@ant-design/icons'
 import MappingArticleView from './MappingArticleView'
+import MappingReviewPanel from './MappingReviewPanel'
+import { api, ApiError } from '../api/client'
 import { copyText } from '../utils/clipboard'
 import {
   buildOptimizeArticlePrompt,
   buildScriptPagePlan,
 } from '../utils/storyBreakdown'
 import type {
+  MappingReview,
   StoryBreakdown,
   StoryboardChapterRead,
   StoryboardMappingItem,
@@ -30,6 +33,8 @@ interface StoryboardMappingTabProps {
   /** 已勾选要生成脚本的页码 */
   selectedPages: number[]
   onSelectedPagesChange: (pages: number[]) => void
+  /** 审阅应用后把新 breakdown 回传给详情页 */
+  onBreakdownUpdated?: (breakdown: StoryBreakdown) => void
 }
 
 /** 表格列：章节模式下展示章节 / 章内页，未分章时展示脚本页规划。 */
@@ -155,12 +160,43 @@ export default function StoryboardMappingTab({
   breakdown,
   selectedPages,
   onSelectedPagesChange,
+  onBreakdownUpdated,
 }: StoryboardMappingTabProps) {
   const { message } = App.useApp()
   const [articleOpen, setArticleOpen] = useState(false)
   const [requirement, setRequirement] = useState('')
+  const [review, setReview] = useState<MappingReview | null>(null)
+  const [reviewOpen, setReviewOpen] = useState(false)
   const mapping = breakdown?.mapping ?? []
   const chapters = breakdown?.chapters ?? []
+  const storyId = breakdown?.story_id
+
+  useEffect(() => {
+    if (!storyId) {
+      setReview(null)
+      return
+    }
+    let cancelled = false
+    api
+      .getMappingReview(storyId)
+      .then((data) => {
+        if (!cancelled) {
+          setReview(data.status === 'draft' ? data : null)
+        }
+      })
+      .catch((error) => {
+        if (
+          !cancelled &&
+          !(error instanceof ApiError && error.status === 404)
+        ) {
+          // 审阅接口失败不影响只读对照表展示，静默忽略
+          setReview(null)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [storyId, breakdown?.updated_at])
   const isChaptered = chapters.length > 0
   const excludedCount = mapping.filter((item) => item.excluded).length
   const scriptPlan = useMemo(
@@ -317,6 +353,15 @@ export default function StoryboardMappingTab({
             </>
           )}
           <Button
+            icon={<AuditOutlined />}
+            onClick={() => setReviewOpen(true)}
+          >
+            审阅对照
+            {review?.summary.pending_count
+              ? `（${review.summary.pending_count}）`
+              : ''}
+          </Button>
+          <Button
             icon={<ReadOutlined />}
             onClick={() => setArticleOpen(true)}
           >
@@ -365,6 +410,20 @@ export default function StoryboardMappingTab({
               })
         }
       />
+
+      {breakdown ? (
+        <MappingReviewPanel
+          storyId={breakdown.story_id}
+          open={reviewOpen}
+          breakdown={breakdown}
+          onClose={() => setReviewOpen(false)}
+          onApplied={(result) => {
+            onBreakdownUpdated?.(result.breakdown)
+            setReviewOpen(false)
+          }}
+          onReviewUpdated={setReview}
+        />
+      ) : null}
 
       <Modal
         title="优化文 · 分镜对照"

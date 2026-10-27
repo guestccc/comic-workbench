@@ -106,6 +106,52 @@ cd comic-workbench
    - 详情页「分镜头脚本」顶部的「原文 / 优化文对比」：左侧原文、右侧优化文，字符级高亮改动；「改动解读」会调用 DeepSeek 逐条说明改了什么、属于钩子 / 悬念 / 信息差 / 爆点 / 节奏 / 保留等哪类调整，以及对读者的作用，适合不了解写作手法的用户快速理解优化思路（需配置 DeepSeek Key；两篇合计超过 45000 字时仅提供逐字对比）。
    - 若故事原文在拆解后被修改，或画风被更换，详情页会提示「原文已修改 / 画风已变更」，建议重新拆解。
    - 拆解规则维护在项目技能 `.claude/skills/story-breakdown/SKILL.md` 中，后续可直接修改优化；修改后在 Claude Code 中重新加载会话即可生效。
+
+### 内容审阅 agent（Claude Code）
+
+项目内置三个只读审阅 agent，定义在 `.claude/agents/`；它们只出建议，不写数据库，确认后由主会话修改：
+
+| 中文名 | 文件 | 用途 |
+|---|---|---|
+| 分镜对照导演 | `mapping-director.md` | 拆 mapping，或审已有 mapping 的过载 / 过碎 / 不完整 |
+| 旁白编辑 | `narration-editor.md` | 审主旁白、副旁白、标红词、台词与连读 |
+| 审片导演 | `storyboard-director.md` | 审整章节奏、机位、连续性、图文一致 |
+
+调用示例（粘贴到 Claude Code）：
+
+```text
+用 mapping-director review 故事 5
+用 narration-editor 检查故事 5 第 2 章
+用 storyboard-director 审故事 5 第 2 章
+```
+
+新建或修改 agent 文件后，需要新开 Claude Code 会话才会加载。
+
+从页面复制「本章脚本指令」时，指令已经包含生成后的自动审片：`script_check` → `narration-editor` → `storyboard-director`。粘贴一次即可，不需要再单独喊审片；审片只给问题清单，不会自动改页面。
+
+### 分镜对照审阅（页面）
+
+分镜对照页的「审阅对照」用于处理 agent 生成的拆分提案：
+
+- 提案写入 `mapping_reviews` 草稿，不会直接改 `mapping`；草稿绑定当前 mapping 哈希，mapping 改过后旧提案会自动拒绝。
+- 低风险变更默认同意；中 / 高风险进入决策队列，可逐项选择「同意 / 保留 / 稍后」。
+- 应用前会显示预计页数与影响；未决项按保留处理。
+- 已有分镜页时不能应用，需要先清空分镜页。
+- 已有章节时必须勾选确认清空：章节、章节文案会删除，章节封面 / 引导卡图片会移到 `backend/uploads/chapters-archive/` 备份。
+- 应用后返回新的 mapping，页码由后端重排；归一化覆盖校验通过，严格逐行连续仅作为提示。
+
+如果 `mapping-director` 输出的是完整候选 mapping，Claude Code 会先用转换脚本把它变成变更列表，再写入草稿：
+
+```bash
+cd backend
+.venv/Scripts/python.exe ../.claude/skills/story-breakdown/proposal_to_changes.py \
+  --story-id 5 \
+  --proposal /path/to/proposal.json \
+  --output /path/to/changes.json
+```
+
+然后 PUT `/api/stories/5/breakdown/mapping-review`，内容为 `changes.json`。
+
 3. 在「故事详情 → 发文配置」中选择章节，维护该章的小红书标题与正文，可手动填写或点击「AI 生成本章文案」；AI 一次给出 3 个不同切入角度的方案（标注各自特点与推荐方案），选定后填入表单，不会自动保存，确认后点击「保存本章文案」。
    - 第 1 章不自动加前情提要；
    - 第 2 章起，正文第一段自动加入上一章的前情提要；

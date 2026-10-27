@@ -155,6 +155,48 @@ class StoryBreakdown(Base):
     )
 
 
+class MappingReview(Base):
+    """分镜对照审阅草稿：一个故事一份，随故事删除级联清理。
+
+    proposal / decisions 用 JSON 存储；mapping 仍是唯一源，应用前不写入。
+    """
+
+    __tablename__ = "mapping_reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'applied', 'discarded')",
+            name="ck_mapping_reviews_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    story_id: Mapped[int] = mapped_column(
+        ForeignKey("stories.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="draft", nullable=False
+    )
+    # 创建草稿时的 mapping SHA-256；mapping 变了就拒绝应用
+    base_mapping_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 变更列表：包含服务端计算的 risk / page_delta / crosses_chapter
+    proposal: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    # change_id -> approved / rejected / undecided
+    decisions: Mapped[dict[str, str]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class StoryPostConfig(Base):
     """每个故事一份的旧版发文配置，与 posts 的多条发文记录互不影响。
 

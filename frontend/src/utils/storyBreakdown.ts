@@ -541,10 +541,21 @@ ${existingText}
 3. 逐页 PUT \`${apiBase}/api/stories/${storyId}/breakdown/pages/{全局页码}\`，写入目标页全部字段与章节字段。
 4. 不要 PATCH optimized_content / mapping / chapters；已有角色卡不要覆盖。
 
+【生成后自动审片】
+写回完成后不要停，按以下顺序继续：
+1. 运行 \`.claude/skills/story-breakdown/script_check.py --story-id ${storyId} --chapter ${chapterNumber}\`，确认通过。
+2. 并行调用两个只读 agent：
+   - narration-editor：审本章主旁白、副旁白、标红、台词、连读；
+   - storyboard-director：审本章节奏、机位、连续性、图文一致。
+   如果当前会话没有加载这两个 agent，按 \`.claude/agents/narration-editor.md\` / \`.claude/agents/storyboard-director.md\` 的说明用通用子代理执行。
+3. 汇总成问题清单：页码、问题类型、严重程度、证据、修改建议；不要自动修改 pages，等我确认。
+4. 最后输出：硬检查结果、旁白问题、分镜问题、建议先修哪几页。
+
 【输出要求】
 1. 逐页完整输出本次目标页的全部条目，不要只给摘要。
 2. 最后报告写入页数、每页「章节页 → 全局页 → 对照段」、保留的页和字数自检结果。
-3. 只输出文字脚本与生图提示词，不要实际生成图片。`
+3. 只输出文字脚本与生图提示词，不要实际生成图片。
+4. 附上自动审片汇总。`
 }
 
 /** 章节规划：把连续 mapping 切成一篇篇小红书笔记。 */

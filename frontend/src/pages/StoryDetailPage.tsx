@@ -396,6 +396,10 @@ export default function StoryDetailPage() {
                   breakdown={breakdown}
                   selectedPages={selectedMappingPages}
                   onSelectedPagesChange={setSelectedMappingPages}
+                  onBreakdownUpdated={(next) => {
+                    setBreakdown(next)
+                    setSelectedMappingPages([])
+                  }}
                 />
               ),
             },

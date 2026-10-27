@@ -8,6 +8,7 @@ import re
 import shutil
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -469,6 +470,30 @@ def delete_story_chapter_assets(upload_dir: Path, story_id: int) -> None:
         logger.warning(
             "删除故事章节图片目录失败: story=%s", story_id, exc_info=True
         )
+
+
+def archive_story_chapter_assets(
+    upload_dir: Path, story_id: int
+) -> Path | None:
+    """把章节封面 / 引导卡图片移到备份目录，避免清空章节后按章号误挂回。
+
+    返回备份目录；没有章节图片或移动失败时返回 None，不阻塞主流程。
+    """
+    source = upload_dir / "chapters" / str(story_id)
+    if not source.is_dir():
+        return None
+    archive_root = upload_dir / "chapters-archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    target = archive_root / f"{story_id}-{stamp}-{uuid.uuid4().hex[:6]}"
+    try:
+        shutil.move(str(source), str(target))
+        return target
+    except OSError:
+        logger.warning(
+            "备份章节图片失败: story=%s", story_id, exc_info=True
+        )
+        return None
 
 
 # ---------- 角色资产图 ----------

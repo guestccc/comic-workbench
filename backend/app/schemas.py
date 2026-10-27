@@ -715,6 +715,115 @@ class StoryboardMappingItem(BaseModel):
         return value.strip()
 
 
+MappingChangeKind = Literal["split", "merge", "keep"]
+MappingRisk = Literal["high", "medium", "low"]
+MappingDecision = Literal["approved", "rejected", "undecided"]
+
+
+class ProposedMappingSegment(BaseModel):
+    """审阅提案里的一段：只改边界，不改原文。"""
+
+    source_text: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    summary: str = Field(default="", max_length=MAX_PAGE_SHORT_TEXT_LENGTH)
+    paragraph: str = Field(default="", max_length=50)
+    part: str = Field(default="", max_length=20)
+    # 以下字段只用于审阅展示，不写入 mapping
+    beat_type: str = Field(default="", max_length=20)
+    time_place: str = Field(default="", max_length=200)
+    characters: list[str] = Field(
+        default_factory=list, max_length=MAX_PAGE_CHARACTERS
+    )
+    visual_load: int | None = Field(default=None, ge=1, le=3)
+
+    @field_validator("source_text")
+    @classmethod
+    def _source_not_blank(cls, value: str) -> str:
+        # 保留换行与首尾空白，保证逐字拼接可以校验
+        if not value.strip():
+            raise ValueError("原文摘录不能为空")
+        return value
+
+    @field_validator(
+        "summary", "paragraph", "part", "beat_type", "time_place"
+    )
+    @classmethod
+    def _strip_optional(cls, value: str) -> str:
+        return value.strip()
+
+
+class MappingReviewChange(BaseModel):
+    """一条拆分 / 合并 / 保留提案。"""
+
+    id: str = Field(min_length=1, max_length=80)
+    kind: MappingChangeKind
+    risk: MappingRisk = "medium"
+    old_page_numbers: list[int] = Field(
+        min_length=1, max_length=MAX_BREAKDOWN_PAGES
+    )
+    proposed_segments: list[ProposedMappingSegment] = Field(
+        default_factory=list, max_length=MAX_BREAKDOWN_PAGES
+    )
+    reason: str = Field(default="", max_length=MAX_PAGE_TEXT_LENGTH)
+    # 服务端计算，客户端传值会被覆盖
+    page_delta: int = 0
+    crosses_chapter: bool = False
+
+    @field_validator("old_page_numbers")
+    @classmethod
+    def _ordered_old_pages(cls, value: list[int]) -> list[int]:
+        if not value:
+            raise ValueError("至少需要一个原对照段")
+        if value != sorted(value) or len(set(value)) != len(value):
+            raise ValueError("old_page_numbers 必须升序且不重复")
+        if value != list(range(value[0], value[0] + len(value))):
+            raise ValueError("old_page_numbers 必须是连续的原对照段")
+        return value
+
+
+class MappingReviewCreate(BaseModel):
+    """创建 / 替换审阅草稿。"""
+
+    changes: list[MappingReviewChange] = Field(
+        min_length=1, max_length=MAX_BREAKDOWN_PAGES
+    )
+
+
+class MappingReviewDecisionUpdate(BaseModel):
+    """保存人工决策。"""
+
+    decisions: dict[str, MappingDecision] = Field(default_factory=dict)
+
+
+class MappingReviewApply(BaseModel):
+    """应用已同意的变更。"""
+
+    clear_chapters: bool = False
+
+
+class MappingReviewSummary(BaseModel):
+    current_page_count: int
+    proposed_page_count: int
+    total_changes: int
+    pending_count: int
+    auto_approved_count: int
+    rejected_count: int
+    chapters_count: int
+    chapters_locked: bool
+
+
+class MappingReviewRead(BaseModel):
+    id: int
+    story_id: int
+    status: Literal["draft", "applied", "discarded"]
+    base_mapping_hash: str
+    changes: list[MappingReviewChange]
+    decisions: dict[str, MappingDecision]
+    summary: MappingReviewSummary
+    created_at: datetime
+    updated_at: datetime
+    applied_at: datetime | None = None
+
+
 class ChapterCover(BaseModel):
     """章节封面：顶部小字 + 主旁白 + 副旁白 + 生图提示词。
 
@@ -914,6 +1023,14 @@ class StoryBreakdownRead(_TimestampMixin):
     # 由后端对比当前故事计算：原文已更新 / 画风已变更
     is_content_stale: bool = False
     is_art_style_stale: bool = False
+
+
+class MappingReviewApplyResult(BaseModel):
+    """应用结果：返回新 breakdown，并标明严格连续与章节是否被清空。"""
+
+    breakdown: StoryBreakdownRead
+    strict_coverage: bool
+    chapters_cleared: bool
 
 
 # ---------------------------------------------------------------------------

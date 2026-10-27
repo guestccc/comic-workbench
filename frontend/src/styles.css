@@ -277,6 +277,48 @@ body {
   word-break: break-word;
 }
 
+/* 分镜对照审阅工作台 */
+.mapping-review-summary {
+  margin-bottom: 12px;
+}
+
+.mapping-review-change {
+  margin-bottom: 10px;
+}
+
+.mapping-review-source {
+  margin: 6px 0 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fafafa;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mapping-review-segments {
+  margin-top: 4px;
+}
+
+.mapping-review-segment {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-left: 3px solid #91caff;
+  background: #f7fbff;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mapping-review-decision {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 /* 优化文弹窗里的 AI 优化输入区 */
 .article-optimize-panel {
   display: flex;

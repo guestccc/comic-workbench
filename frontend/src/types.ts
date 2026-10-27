@@ -262,6 +262,63 @@ export interface StoryBreakdown {
   updated_at: string
 }
 
+/** 分镜对照审阅：一条拆分 / 合并 / 保留提案。 */
+export type MappingChangeKind = 'split' | 'merge' | 'keep'
+export type MappingRisk = 'high' | 'medium' | 'low'
+export type MappingDecision = 'approved' | 'rejected' | 'undecided'
+
+export interface ProposedMappingSegment {
+  source_text: string
+  summary: string
+  paragraph: string
+  part: string
+  beat_type: string
+  time_place: string
+  characters: string[]
+  visual_load: number | null
+}
+
+export interface MappingReviewChange {
+  id: string
+  kind: MappingChangeKind
+  risk: MappingRisk
+  old_page_numbers: number[]
+  proposed_segments: ProposedMappingSegment[]
+  reason: string
+  page_delta: number
+  crosses_chapter: boolean
+}
+
+export interface MappingReviewSummary {
+  current_page_count: number
+  proposed_page_count: number
+  total_changes: number
+  pending_count: number
+  auto_approved_count: number
+  rejected_count: number
+  chapters_count: number
+  chapters_locked: boolean
+}
+
+export interface MappingReview {
+  id: number
+  story_id: number
+  status: 'draft' | 'applied' | 'discarded'
+  base_mapping_hash: string
+  changes: MappingReviewChange[]
+  decisions: Record<string, MappingDecision>
+  summary: MappingReviewSummary
+  created_at: string
+  updated_at: string
+  applied_at: string | null
+}
+
+export interface MappingReviewApplyResult {
+  breakdown: StoryBreakdown
+  strict_coverage: boolean
+  chapters_cleared: boolean
+}
+
 /** AI 对原文 → 优化文单处改动的解读。 */
 export interface OptimizationChangeNote {
   /** 改动类型：钩子 / 悬念 / 信息差 / 爆点 / 节奏 / 情绪 / 口语化 / 细节 / 删减 / 保留 */

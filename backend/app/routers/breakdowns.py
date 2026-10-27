@@ -35,6 +35,11 @@ from ..schemas import (
     CharacterOptimizeRequest,
     CharacterSyncRequest,
     CharacterSyncResult,
+    MappingReviewApply,
+    MappingReviewApplyResult,
+    MappingReviewCreate,
+    MappingReviewDecisionUpdate,
+    MappingReviewRead,
     StoryboardChapterRead,
     StoryboardMappingItem,
     StoryboardPagePayload,
@@ -68,6 +73,13 @@ from ..services.files import (
     save_character_asset,
     save_group_photo,
     save_page_image,
+)
+from ..services.mapping_reviews import (
+    apply_review,
+    create_or_replace_review,
+    discard_review,
+    get_review,
+    update_decisions,
 )
 from ..services.prompts import validate_prompt_page_number
 
@@ -306,6 +318,79 @@ def get_breakdown(
         story,
         _resolve_story_style(db, story),
         request.app.state.app_settings.upload_dir,
+    )
+
+
+@router.put(
+    "/{story_id}/breakdown/mapping-review",
+    response_model=MappingReviewRead,
+)
+def put_mapping_review(
+    story_id: int,
+    payload: MappingReviewCreate,
+    db: Session = Depends(get_db),
+) -> MappingReviewRead:
+    """创建或替换分镜对照审阅草稿；只写草稿，不动 mapping。"""
+    story = _get_story_or_404(db, story_id)
+    return create_or_replace_review(db, story, payload)
+
+
+@router.get(
+    "/{story_id}/breakdown/mapping-review",
+    response_model=MappingReviewRead,
+)
+def read_mapping_review(
+    story_id: int, db: Session = Depends(get_db)
+) -> MappingReviewRead:
+    return get_review(db, story_id)
+
+
+@router.patch(
+    "/{story_id}/breakdown/mapping-review",
+    response_model=MappingReviewRead,
+)
+def patch_mapping_review(
+    story_id: int,
+    payload: MappingReviewDecisionUpdate,
+    db: Session = Depends(get_db),
+) -> MappingReviewRead:
+    """保存人工决策；未知 change_id 会被拒绝。"""
+    return update_decisions(db, story_id, payload)
+
+
+@router.delete(
+    "/{story_id}/breakdown/mapping-review", status_code=204
+)
+def delete_mapping_review(
+    story_id: int, db: Session = Depends(get_db)
+) -> Response:
+    discard_review(db, story_id)
+    return Response(status_code=204)
+
+
+@router.post(
+    "/{story_id}/breakdown/mapping-review/apply",
+    response_model=MappingReviewApplyResult,
+)
+def apply_mapping_review(
+    story_id: int,
+    payload: MappingReviewApply,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> MappingReviewApplyResult:
+    """应用已同意的变更；MVP 要求 pages 为空，章节需显式确认清空。"""
+    story = _get_story_or_404(db, story_id)
+    upload_dir = request.app.state.app_settings.upload_dir
+    breakdown, strict_coverage, chapters_cleared = apply_review(
+        db, story, payload.clear_chapters, upload_dir
+    )
+    style = _resolve_story_style(db, story)
+    return MappingReviewApplyResult(
+        breakdown=_to_breakdown_read(
+            breakdown, story, style, upload_dir
+        ),
+        strict_coverage=strict_coverage,
+        chapters_cleared=chapters_cleared,
     )
 
 

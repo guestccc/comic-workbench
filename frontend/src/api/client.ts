@@ -7,6 +7,10 @@ import type {
   CharacterSyncItem,
   CharacterSyncResult,
   GeneratedCopy,
+  MappingDecision,
+  MappingReview,
+  MappingReviewApplyResult,
+  MappingReviewChange,
   Post,
   PostStatus,
   PromptOptimizePayload,
@@ -142,6 +146,42 @@ export const api = {
   // 故事拆解结果（由 Claude Code 技能写回，页面可编辑）
   getBreakdown: (storyId: number) =>
     request<StoryBreakdown | null>(`/api/stories/${storyId}/breakdown`),
+  getMappingReview: (storyId: number) =>
+    request<MappingReview>(
+      `/api/stories/${storyId}/breakdown/mapping-review`,
+    ),
+  putMappingReview: (storyId: number, changes: MappingReviewChange[]) =>
+    request<MappingReview>(
+      `/api/stories/${storyId}/breakdown/mapping-review`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ changes }),
+      },
+    ),
+  updateMappingReviewDecisions: (
+    storyId: number,
+    decisions: Record<string, MappingDecision>,
+  ) =>
+    request<MappingReview>(
+      `/api/stories/${storyId}/breakdown/mapping-review`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ decisions }),
+      },
+    ),
+  applyMappingReview: (storyId: number, clearChapters: boolean) =>
+    request<MappingReviewApplyResult>(
+      `/api/stories/${storyId}/breakdown/mapping-review/apply`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ clear_chapters: clearChapters }),
+      },
+    ),
+  deleteMappingReview: (storyId: number) =>
+    request<void>(
+      `/api/stories/${storyId}/breakdown/mapping-review`,
+      { method: 'DELETE' },
+    ),
   patchBreakdown: (storyId: number, payload: StoryBreakdownPatch) =>
     request<StoryBreakdown>(`/api/stories/${storyId}/breakdown`, {
       method: 'PATCH',

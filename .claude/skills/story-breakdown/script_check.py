@@ -47,10 +47,46 @@ REQUIRED_FIELDS = (
     "narration_sub",
     "image_prompt",
 )
+IMAGE_SECTIONS = (
+    "【画风】",
+    "【画面】",
+    "【角色一致性】",
+    "【画面形式】",
+    "【文字区】",
+    "【页码】",
+    "【负面提示词】",
+)
+PAGE_ROLES = {
+    "钩子封面",
+    "铺垫",
+    "冲突",
+    "反转",
+    "爆点",
+    "情绪高潮",
+    "收尾",
+}
 
 
 def count_chars(text: str) -> int:
     return len(IGNORED.sub("", text or ""))
+
+
+def page_label(page: dict) -> str:
+    chapter_number = page.get("chapter_number")
+    local_number = page.get("chapter_page_number")
+    if chapter_number is not None and local_number is not None:
+        return f"第{chapter_number}章第{local_number}页"
+    return f"全局第{page.get('page_number')}页"
+
+
+# 旁白里禁止用第三人称代词；排除「其他」「吉他」这类非代词。
+PRONOUN = re.compile(r"(?<!其)(?<!吉)[他她]")
+TEXT_ZONE = re.compile(r"【文字区】(.*?)(?=\n【页码】|$)", re.S)
+
+
+def extract_text_zone(prompt: str) -> str:
+    match = TEXT_ZONE.search(prompt or "")
+    return match.group(1) if match else ""
 
 
 def load_breakdown(args: argparse.Namespace) -> dict:
@@ -120,6 +156,11 @@ def main() -> int:
     )
     mapping_numbers = [item.get("page_number") for item in mapping]
     page_numbers = [page.get("page_number") for page in pages]
+    character_names = {
+        card.get("name")
+        for card in (breakdown.get("characters") or [])
+        if card.get("name")
+    }
 
     issues: list[str] = []
     if not mapping:
@@ -392,11 +433,73 @@ def main() -> int:
                 f"全局第{script_number}页字段为空：{', '.join(empty)}"
             )
 
+        label = page_label(page)
+        role = (page.get("page_role") or "").strip()
+        if not role:
+            issues.append(f"{label} page_role 为空")
+        elif role not in PAGE_ROLES:
+            issues.append(f"{label} page_role「{role}」不在允许值中")
+        if not (page.get("camera_angle") or "").strip():
+            issues.append(f"{label} camera_angle 为空")
+
+        highlight = (page.get("narration_highlight") or "").strip()
+        if highlight and highlight not in main and highlight not in sub:
+            issues.append(
+                f"{label} narration_highlight 不是主/副旁白的连续片段"
+            )
+
+        unknown_characters = [
+            name
+            for name in (page.get("characters") or [])
+            if name not in character_names
+        ]
+        if unknown_characters:
+            issues.append(
+                f"{label} 引用了角色卡中不存在的角色："
+                f"{'、'.join(unknown_characters)}"
+            )
+
         # 图片里显示的是章内页码；不能把全局页码或对照段号写进 image_prompt
         expected_page = (
             local_number if local_number is not None else script_number
         )
         image_prompt = page.get("image_prompt") or ""
+
+        missing_sections = [
+            section for section in IMAGE_SECTIONS if section not in image_prompt
+        ]
+        if missing_sections:
+            issues.append(
+                f"{label} image_prompt 缺少分块："
+                f"{'、'.join(missing_sections)}"
+            )
+
+        # 旁白称谓：禁用第三人称代词，改用角色姓名或「我」
+        for label, text in (("主旁白", main), ("副旁白", sub)):
+            pronouns = sorted(set(PRONOUN.findall(text)))
+            if pronouns:
+                issues.append(
+                    f"全局第{script_number}页{label}出现代词"
+                    f"「{'、'.join(pronouns)}」；应改用「我」或角色姓名"
+                )
+
+        # 字段文字必须逐字出现在 image_prompt 的【文字区】
+        text_zone = extract_text_zone(image_prompt)
+        if text_zone:
+            if main.strip() and main.strip() not in text_zone:
+                issues.append(
+                    f"全局第{script_number}页主旁白未逐字出现在【文字区】"
+                )
+            missing_sub_lines = [
+                line for line in sub_lines if line not in text_zone
+            ]
+            if missing_sub_lines:
+                issues.append(
+                    f"全局第{script_number}页副旁白未逐字出现在【文字区】"
+                    f"（{len(missing_sub_lines)} 行），例如："
+                    f"{missing_sub_lines[0]}"
+                )
+
         page_section = re.search(r"【页码】([^\n]*)", image_prompt)
         if not page_section:
             issues.append(
@@ -419,6 +522,24 @@ def main() -> int:
                     f"全局第{script_number}页 image_prompt 页码错误："
                     f"应写第{expected_page}页（章内页码），实际为 {found_text}"
                 )
+
+    # 相邻页机位 + 景别不能完全相同；跨章节不比较
+    for previous, current in zip(selected_pages, selected_pages[1:]):
+        if previous.get("chapter_number") != current.get("chapter_number"):
+            continue
+        previous_combo = (
+            previous.get("camera_angle"),
+            previous.get("shot_type"),
+        )
+        current_combo = (
+            current.get("camera_angle"),
+            current.get("shot_type"),
+        )
+        if previous_combo == current_combo:
+            issues.append(
+                f"{page_label(previous)} 与 {page_label(current)} 的"
+                f"机位+景别完全相同：{previous_combo[0]} / {previous_combo[1]}"
+            )
 
     if issues:
         print("\n问题：")
