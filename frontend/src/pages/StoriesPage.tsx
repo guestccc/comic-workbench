@@ -20,13 +20,20 @@ import {
   EditOutlined,
   EyeOutlined,
   PlusOutlined,
+  SafetyOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import CoverUpload from '../components/CoverUpload'
 import PageHeader from '../components/PageHeader'
+import SensitiveWordModal from '../components/SensitiveWordModal'
 import { api, ApiError, getErrorMessage } from '../api/client'
-import type { ArtStyle, Story } from '../types'
+import type {
+  ArtStyle,
+  SensitiveApplyResult,
+  SensitiveEdit,
+  Story,
+} from '../types'
 import { copyText } from '../utils/clipboard'
 import {
   buildStoryMappingPrompt,
@@ -118,6 +125,9 @@ export default function StoriesPage() {
   const [editing, setEditing] = useState<Story | null>(null)
   const [saving, setSaving] = useState(false)
   const [coverUploading, setCoverUploading] = useState(false)
+  const [sensitiveOpen, setSensitiveOpen] = useState(false)
+  const [sensitiveEdit, setSensitiveEdit] = useState<SensitiveEdit | null>(null)
+  const contentValue = Form.useWatch('content', form)
 
   const load = async () => {
     setLoading(true)
@@ -159,6 +169,7 @@ export default function StoriesPage() {
 
   const openCreate = () => {
     setEditing(null)
+    setSensitiveEdit(null)
     form.resetFields()
     // 新建时默认跟随当前选用的画风，仍可为该故事单独选择
     form.setFieldsValue({ art_style_id: activeArtStyleId ?? undefined })
@@ -167,6 +178,7 @@ export default function StoriesPage() {
 
   const openEdit = (story: Story) => {
     setEditing(story)
+    setSensitiveEdit(story.sensitive_edit ?? null)
     form.setFieldsValue({
       name: story.name,
       content: story.content,
@@ -194,6 +206,11 @@ export default function StoriesPage() {
         content: values.content,
         cover_filename: values.cover_filename ?? null,
         art_style_id: values.art_style_id ?? null,
+        // 只在文本仍是上次替换结果时提交审计，避免用户手改后审计失真
+        sensitive_edit:
+          sensitiveEdit?.result_content === values.content
+            ? sensitiveEdit
+            : null,
       }
       if (editing) {
         await api.updateStory(editing.id, payload)
@@ -438,11 +455,38 @@ export default function StoriesPage() {
             />
           </Form.Item>
 
+          <div style={{ marginTop: -8, marginBottom: 16 }}>
+            <Button
+              icon={<SafetyOutlined />}
+              disabled={!contentValue?.trim()}
+              onClick={() => setSensitiveOpen(true)}
+            >
+              检测敏感词
+            </Button>
+            {sensitiveEdit ? (
+              <Typography.Text type="secondary" style={{ marginLeft: 10 }}>
+                上次替换 {sensitiveEdit.items.length} 个词、共{' '}
+                {sensitiveEdit.items.reduce((sum, item) => sum + item.count, 0)}{' '}
+                处
+              </Typography.Text>
+            ) : null}
+          </div>
+
           <Form.Item name="cover_filename" label="故事封面">
             <CoverUpload onUploadingChange={setCoverUploading} />
           </Form.Item>
         </Form>
       </Modal>
+
+      <SensitiveWordModal
+        open={sensitiveOpen}
+        text={contentValue ?? ''}
+        onClose={() => setSensitiveOpen(false)}
+        onApply={(result: SensitiveApplyResult) => {
+          form.setFieldValue('content', result.content)
+          setSensitiveEdit(result.sensitive_edit)
+        }}
+      />
     </div>
   )
 }

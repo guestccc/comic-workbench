@@ -19,6 +19,7 @@ from ..models import (
     StoryPostConfig,
 )
 from ..schemas import (
+    SensitiveStoryApplyRequest,
     StoryCreate,
     StoryRead,
     StoryUpdate,
@@ -26,6 +27,12 @@ from ..schemas import (
     ZhihuAliasSuggestionsRead,
 )
 from ..services.deepseek import generate_zhihu_aliases
+from ..services.sensitive_words import (
+    apply_text,
+    build_sensitive_edit,
+    dictionary_version,
+    load_sensitive_words,
+)
 from ..services.zhihu import (
     ALIAS_PATTERN,
     apply_alias_prefix,
@@ -42,6 +49,7 @@ from ..services.files import (
     page_image_url,
     validate_cover_filename,
 )
+from ..services.image_generations import delete_story_history
 
 router = APIRouter(prefix="/api/stories", tags=["故事"])
 
@@ -102,6 +110,7 @@ def _to_story_read(
         zhihu_article_id=story.zhihu_article_id,
         zhihu_alias=story.zhihu_alias,
         zhihu_aliases=aliases,
+        sensitive_edit=story.sensitive_edit,
         created_at=story.created_at,
         updated_at=story.updated_at,
     )
@@ -161,8 +170,9 @@ def _validate_alias_unique(
 def list_stories(
     request: Request, db: Session = Depends(get_db)
 ) -> list[StoryRead]:
+    # 列表按创建时间倒序，编辑旧故事不会把它顶到最前
     stories = db.scalars(
-        select(Story).order_by(Story.updated_at.desc(), Story.id.desc())
+        select(Story).order_by(Story.created_at.desc(), Story.id.desc())
     ).all()
     styles = _load_art_styles(db)
     upload_dir = request.app.state.app_settings.upload_dir
@@ -184,6 +194,7 @@ def create_story(
         content=payload.content,
         cover_filename=payload.cover_filename,
         art_style_id=payload.art_style_id,
+        sensitive_edit=payload.sensitive_edit,
     )
     db.add(story)
     db.commit()
@@ -226,6 +237,9 @@ def update_story(
     story.content = payload.content
     story.cover_filename = payload.cover_filename
     story.art_style_id = payload.art_style_id
+    # 未传敏感词审计时保留旧记录；传 null 表示明确清除
+    if "sensitive_edit" in payload.model_fields_set:
+        story.sensitive_edit = payload.sensitive_edit
     db.commit()
     db.refresh(story)
 
@@ -234,6 +248,34 @@ def update_story(
         delete_cover_file(old_cover, upload_dir)
 
     return _to_story_read(story, styles, upload_dir)
+
+
+@router.post("/{story_id}/sensitive-words/apply", response_model=StoryRead)
+def apply_story_sensitive_words(
+    story_id: int,
+    payload: SensitiveStoryApplyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StoryRead:
+    """对已保存故事执行敏感词替换，只改原文并记录审计，不动拆解结果。"""
+    story = _get_story_or_404(db, story_id)
+    words = load_sensitive_words(db)
+    version = dictionary_version(words)
+    original = story.content
+    content, items = apply_text(
+        original,
+        words,
+        [item.model_dump() for item in payload.items],
+    )
+    story.content = content
+    story.sensitive_edit = build_sensitive_edit(original, content, items, version)
+    db.commit()
+    db.refresh(story)
+    return _to_story_read(
+        story,
+        _load_art_styles(db),
+        request.app.state.app_settings.upload_dir,
+    )
 
 
 @router.patch("/{story_id}/zhihu", response_model=StoryRead)
@@ -289,6 +331,15 @@ def update_story_zhihu(
             legacy_config.content = apply_alias_prefix(
                 legacy_config.content, payload.zhihu_alias
             )
+        # 发文管理里的记录也属于已保存文案，别名变化时同步开头
+        posts = db.scalars(
+            select(Post).where(Post.story_id == story_id)
+        ).all()
+        for post in posts:
+            if post.content.strip():
+                post.content = apply_alias_prefix(
+                    post.content, payload.zhihu_alias
+                )
 
     db.commit()
     db.refresh(story)
@@ -341,27 +392,37 @@ def suggest_zhihu_aliases(
     aliases = generate_zhihu_aliases(api_key, title)
     forbidden_bigrams = title_bigrams(title)
     valid: list[str] = []
+    invalid_format = 0
+    reused_title = 0
+    duplicated = 0
     for alias in aliases:
         alias = alias.strip()
         if not ALIAS_PATTERN.fullmatch(alias):
+            invalid_format += 1
             continue
         alias_bigrams = {
             alias[index : index + 2] for index in range(len(alias) - 1)
         }
         if forbidden_bigrams & alias_bigrams:
+            reused_title += 1
             continue
         if alias in existing_aliases or alias in valid:
+            duplicated += 1
             continue
         valid.append(alias)
         if len(valid) >= 6:
             break
 
     if not valid:
-        raise AppError(
-            502,
-            "别名生成失败，请稍后重试或手动填写",
-            "ALIAS_GENERATION_FAILED",
-        )
+        if invalid_format and not reused_title and not duplicated:
+            detail = "生成结果不符合 6–8 个汉字，请重试或手动填写"
+        elif reused_title and not invalid_format and not duplicated:
+            detail = "生成结果都复用了标题里的连续两个字，请重试或手动填写"
+        elif duplicated and not invalid_format and not reused_title:
+            detail = "生成结果都与已有别名重复，请重试或手动填写"
+        else:
+            detail = "别名生成失败，请稍后重试或手动填写"
+        raise AppError(502, detail, "ALIAS_GENERATION_FAILED")
     return ZhihuAliasSuggestionsRead(aliases=valid)
 
 
@@ -397,4 +458,5 @@ def delete_story(
         request.app.state.app_settings.upload_dir, story_id
     )
     delete_group_photo(request.app.state.app_settings.upload_dir, story_id)
+    delete_story_history(request.app.state.app_settings.upload_dir, story_id)
     return Response(status_code=204)

@@ -65,6 +65,15 @@ PAGE_ROLES = {
     "情绪高潮",
     "收尾",
 }
+IMPACT_MARKERS = (
+    "漫画黑色震动短线",
+    "震动短线",
+    "放射集中冲击线",
+    "放射状集中冲击线",
+    "锯齿情绪漫符",
+    "手绘涂鸦",
+    "【冲击层】",
+)
 
 
 def count_chars(text: str) -> int:
@@ -163,6 +172,8 @@ def main() -> int:
     }
 
     issues: list[str] = []
+    warnings: list[str] = []
+    impact_pages: dict[int, list[int]] = {}
     if not mapping:
         issues.append("mapping 为空：先执行「分镜对照」")
     elif mapping_numbers != list(range(1, len(mapping) + 1)):
@@ -474,13 +485,65 @@ def main() -> int:
                 f"{'、'.join(missing_sections)}"
             )
 
-        # 旁白称谓：禁用第三人称代词，改用角色姓名或「我」
+        # 冷调/夜景可以降亮度，但不能把背景压成纯黑。
+        # 「不压暗」是正向约束，不算压暗指令。
+        has_darken = "压暗" in image_prompt and "不压暗" not in image_prompt
+        has_black_guard = "不得纯黑" in image_prompt or "不铺纯黑" in image_prompt
+        if has_darken and not has_black_guard:
+            issues.append(
+                f"{label} 出现「压暗」但没有写「不得纯黑」，"
+                "容易生成纯黑背景"
+            )
+        impact_line = next(
+            (
+                line
+                for line in image_prompt.splitlines()
+                if line.startswith("【冲击层】")
+            ),
+            "",
+        )
+        if impact_line and "背景" not in impact_line:
+            warnings.append(
+                f"{label} 冲击层没有写背景保留要求，"
+                "冲击线可能把背景压成黑色"
+            )
+
+        positive_prompt = image_prompt.split("【负面提示词】")[0]
+        has_impact = any(
+            marker in positive_prompt for marker in IMPACT_MARKERS
+        )
+        if has_impact:
+            impact_pages.setdefault(
+                page.get("chapter_number") or 0, []
+            ).append(script_number)
+            if "【冲击层】" not in image_prompt:
+                warnings.append(
+                    f"{label} 使用了冲击元素但缺少【冲击层】分块"
+                )
+            if role in ("铺垫", "收尾"):
+                warnings.append(
+                    f"{label} page_role={role}，不建议使用冲击层"
+                )
+            if page.get("is_flashback"):
+                warnings.append(
+                    f"{label} 是回忆页，冲击层建议只用轻冲击"
+                )
+
+        # 旁白称谓：禁用第三人称代词，改用角色姓名或「我」。
+        # 已生图的页面文字已经画进图里，改文字会造成图文不一致，
+        # 只提示不阻断；规则只约束还没生图的新页面。
+        has_image = bool(page.get("image_url"))
         for label, text in (("主旁白", main), ("副旁白", sub)):
             pronouns = sorted(set(PRONOUN.findall(text)))
-            if pronouns:
+            if pronouns and not has_image:
                 issues.append(
                     f"全局第{script_number}页{label}出现代词"
                     f"「{'、'.join(pronouns)}」；应改用「我」或角色姓名"
+                )
+            elif pronouns and has_image:
+                warnings.append(
+                    f"全局第{script_number}页{label}出现代词"
+                    f"「{'、'.join(pronouns)}」；该页已生图，文字已固化，保留不改"
                 )
 
         # 字段文字必须逐字出现在 image_prompt 的【文字区】
@@ -540,17 +603,59 @@ def main() -> int:
                 f"{page_label(previous)} 与 {page_label(current)} 的"
                 f"机位+景别完全相同：{previous_combo[0]} / {previous_combo[1]}"
             )
+        previous_positive = (
+            previous.get("image_prompt") or ""
+        ).split("【负面提示词】")[0]
+        current_positive = (
+            current.get("image_prompt") or ""
+        ).split("【负面提示词】")[0]
+        previous_impact = any(
+            marker in previous_positive for marker in IMPACT_MARKERS
+        )
+        current_impact = any(
+            marker in current_positive for marker in IMPACT_MARKERS
+        )
+        if previous_impact and current_impact:
+            warnings.append(
+                f"{page_label(previous)} 与 {page_label(current)} 连续使用冲击层"
+            )
+
+    for chapter_number, page_numbers in impact_pages.items():
+        if len(page_numbers) > 2:
+            warnings.append(
+                f"第{chapter_number}章有 {len(page_numbers)} 页使用冲击层，"
+                "建议最多 2 页"
+            )
+
+    for chapter in breakdown.get("chapters") or []:
+        guide_prompt = (chapter.get("guide") or {}).get("image_prompt") or ""
+        guide_positive = guide_prompt.split("【负面提示词】")[0]
+        if any(marker in guide_positive for marker in IMPACT_MARKERS):
+            issues.append(
+                f"第{chapter.get('chapter_number')}章引导卡出现冲击层；"
+                "引导卡禁止冲击层"
+            )
 
     if issues:
         print("\n问题：")
         for issue in issues:
             print(f"  - {issue}")
+        if warnings:
+            print("\n警告（不阻断，请人工判断）：")
+            for warning in warnings:
+                print(f"  - {warning}")
         print("\n❌ 未通过：先修脚本，再写回。")
         return 1
+
+    if warnings:
+        print("\n警告（不阻断，请人工判断）：")
+        for warning in warnings:
+            print(f"  - {warning}")
 
     print(
         "\n✅ 通过：脚本页码与章节结构一致，"
         "来源对照段完整且不重复，旁白字数符合要求。"
+        + (f"（{len(warnings)} 条警告）" if warnings else "")
     )
     return 0
 

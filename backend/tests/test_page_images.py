@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import zipfile
 
@@ -14,6 +15,10 @@ from tests.test_breakdowns import (
     _put_page,
 )
 from tests.test_uploads import JPEG_BYTES, PNG_BYTES, WEBP_BYTES
+
+
+def _without_query(url: str | None) -> str | None:
+    return url.split("?", 1)[0] if url else url
 
 
 def _upload_page_image(client, story_id, page_number, data=PNG_BYTES, name="page.png"):
@@ -32,6 +37,136 @@ def _get_pages(client, story_id):
     response = client.get(f"/api/stories/{story_id}/breakdown")
     assert response.status_code == 200, response.text
     return response.json()["pages"]
+
+
+def test_ingest_base64_marks_page_done(client):
+    """生图 AI 直接回传 base64 图片，与 multipart 上传等价。"""
+    story, _ = _prepare(client)
+    _put_page(client, story["id"], 1)
+    response = client.post(
+        f"/api/stories/{story['id']}/breakdown/pages/1/image/ingest",
+        json={
+            "image_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+            "filename": "page.png",
+        },
+    )
+    assert response.status_code == 200, response.text
+    page = _get_pages(client, story["id"])[0]
+    assert page["image_url"]
+    assert client.get(page["image_url"]).status_code == 200
+
+
+def test_ingest_rejects_two_sources(client):
+    story, _ = _prepare(client)
+    _put_page(client, story["id"], 1)
+    response = client.post(
+        f"/api/stories/{story['id']}/breakdown/pages/1/image/ingest",
+        json={"image_url": "https://example.com/a.png", "image_base64": "AAAA"},
+    )
+    assert response.status_code == 422
+
+
+def test_ingest_batch_base64_marks_pages_done(client):
+    """批量回传：一次请求写入多页，逐项返回成功。"""
+    story, _ = _prepare(client)
+    _put_page(client, story["id"], 1)
+    _put_page(client, story["id"], 2)
+    encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+    response = client.post(
+        f"/api/stories/{story['id']}/breakdown/pages/images/ingest",
+        json={
+            "items": [
+                {"page_number": 1, "image_base64": encoded, "filename": "p1.png"},
+                {"page_number": 2, "image_base64": encoded, "filename": "p2.png"},
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["total"] == 2
+    assert data["succeeded"] == 2
+    assert data["failed"] == 0
+    assert [item["ok"] for item in data["items"]] == [True, True]
+
+    pages = _get_pages(client, story["id"])
+    assert pages[0]["image_url"]
+    assert pages[1]["image_url"]
+    assert client.get(pages[0]["image_url"]).status_code == 200
+    assert client.get(pages[1]["image_url"]).status_code == 200
+
+
+def test_ingest_batch_partial_failure_keeps_success(client):
+    """批量回传：缺页只让该项失败，不影响已成功的页。"""
+    story, _ = _prepare(client)
+    _put_page(client, story["id"], 1)
+    encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+    response = client.post(
+        f"/api/stories/{story['id']}/breakdown/pages/images/ingest",
+        json={
+            "items": [
+                {"page_number": 1, "image_base64": encoded},
+                {"page_number": 5, "image_base64": encoded},
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["succeeded"] == 1
+    assert data["failed"] == 1
+    assert data["items"][1]["code"] == "PAGE_NOT_FOUND"
+    assert _get_pages(client, story["id"])[0]["image_url"]
+
+
+def test_ingest_batch_bad_base64_only_fails_that_item(client):
+    """批量回传：单张 base64 解码失败只让该项失败。"""
+    story, _ = _prepare(client)
+    _put_page(client, story["id"], 1)
+    _put_page(client, story["id"], 2)
+    encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+    response = client.post(
+        f"/api/stories/{story['id']}/breakdown/pages/images/ingest",
+        json={
+            "items": [
+                {"page_number": 1, "image_base64": "not-base64"},
+                {"page_number": 2, "image_base64": encoded},
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["succeeded"] == 1
+    assert data["failed"] == 1
+    assert data["items"][0]["code"] == "INVALID_IMAGE_BASE64"
+    assert data["items"][1]["ok"] is True
+
+
+def test_ingest_batch_rejects_duplicate_pages(client):
+    story, _ = _prepare(client)
+    _put_page(client, story["id"], 1)
+    response = client.post(
+        f"/api/stories/{story['id']}/breakdown/pages/images/ingest",
+        json={
+            "items": [
+                {"page_number": 1, "image_base64": "AAAA"},
+                {"page_number": 1, "image_base64": "BBBB"},
+            ]
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_ingest_batch_rejects_over_limit(client):
+    story, _ = _prepare(client)
+    response = client.post(
+        f"/api/stories/{story['id']}/breakdown/pages/images/ingest",
+        json={
+            "items": [
+                {"page_number": number, "image_base64": "AAAA"}
+                for number in range(1, 22)
+            ]
+        },
+    )
+    assert response.status_code == 422
 
 
 def test_upload_marks_page_done_and_static_access(client):
@@ -222,8 +357,10 @@ def test_chapter_cover_and_guide_images(client, app_settings):
     )
     assert response.status_code == 200, response.text
     cover_url = f"/uploads/chapters/{story_id}/chapter-1-cover.png"
-    assert response.json()["chapters"][0]["cover"]["image_url"] == cover_url
-    assert client.get(cover_url).status_code == 200
+    cover_image_url = response.json()["chapters"][0]["cover"]["image_url"]
+    assert _without_query(cover_image_url) == cover_url
+    assert "?v=" in (cover_image_url or "")
+    assert client.get(cover_image_url).status_code == 200
 
     response = client.post(
         f"/api/stories/{story_id}/breakdown/chapters/1/guide/image",
@@ -231,8 +368,10 @@ def test_chapter_cover_and_guide_images(client, app_settings):
     )
     assert response.status_code == 200, response.text
     guide_url = f"/uploads/chapters/{story_id}/chapter-1-guide.png"
-    assert response.json()["chapters"][0]["guide"]["image_url"] == guide_url
-    assert client.get(guide_url).status_code == 200
+    guide_image_url = response.json()["chapters"][0]["guide"]["image_url"]
+    assert _without_query(guide_image_url) == guide_url
+    assert "?v=" in (guide_image_url or "")
+    assert client.get(guide_image_url).status_code == 200
 
     # 删除封面图，引导卡图不受影响
     assert (
@@ -243,13 +382,43 @@ def test_chapter_cover_and_guide_images(client, app_settings):
     )
     breakdown = client.get(f"/api/stories/{story_id}/breakdown").json()
     assert breakdown["chapters"][0]["cover"]["image_url"] is None
-    assert breakdown["chapters"][0]["guide"]["image_url"] == guide_url
+    assert _without_query(
+        breakdown["chapters"][0]["guide"]["image_url"]
+    ) == guide_url
     assert not (
         app_settings.upload_dir
         / "chapters"
         / str(story_id)
         / "chapter-1-cover.png"
     ).exists()
+
+
+def test_chapter_cover_url_changes_when_replaced(client):
+    """章节封面文件名固定，覆盖上传后 URL 版本必须变化以绕过浏览器缓存。"""
+    story, _ = _prepare(client)
+    story_id = story["id"]
+    _configure_chapters(client, story_id)
+
+    first = client.post(
+        f"/api/stories/{story_id}/breakdown/chapters/1/cover/image",
+        files={"file": ("cover.png", PNG_BYTES, "image/png")},
+    )
+    assert first.status_code == 200, first.text
+    first_url = first.json()["chapters"][0]["cover"]["image_url"]
+    assert first_url and "?v=" in first_url
+
+    second = client.post(
+        f"/api/stories/{story_id}/breakdown/chapters/1/cover/image",
+        files={
+            "file": ("cover.png", PNG_BYTES + b"replacement", "image/png")
+        },
+    )
+    assert second.status_code == 200, second.text
+    second_url = second.json()["chapters"][0]["cover"]["image_url"]
+    assert second_url and "?v=" in second_url
+    assert _without_query(first_url) == _without_query(second_url)
+    assert first_url != second_url
+    assert client.get(second_url).status_code == 200
 
 
 def test_clear_pages_keeps_chapter_assets(client, app_settings):
@@ -303,14 +472,17 @@ def test_story_cover_prefers_first_chapter_cover(client):
     chapter_cover_url = f"/uploads/chapters/{story_id}/chapter-1-cover.png"
 
     # 有第 1 章封面后，详情与列表都优先使用它
-    assert (
-        client.get(f"/api/stories/{story_id}").json()["cover_url"]
-        == chapter_cover_url
-    )
-    listed = client.get("/api/stories").json()
-    assert next(item for item in listed if item["id"] == story_id)[
+    detail_cover_url = client.get(f"/api/stories/{story_id}").json()[
         "cover_url"
-    ] == chapter_cover_url
+    ]
+    assert _without_query(detail_cover_url) == chapter_cover_url
+    assert "?v=" in (detail_cover_url or "")
+    listed = client.get("/api/stories").json()
+    listed_cover_url = next(
+        item for item in listed if item["id"] == story_id
+    )["cover_url"]
+    assert _without_query(listed_cover_url) == chapter_cover_url
+    assert "?v=" in (listed_cover_url or "")
 
     # 删掉章节封面后回到第一个镜头
     assert (

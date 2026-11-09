@@ -321,6 +321,13 @@ def create_or_replace_review(
             422, "mapping 为空，不能创建审阅草稿", "MAPPING_REVIEW_MAPPING_EMPTY"
         )
     _validate_changes(payload.changes, mapping)
+    if all(change.kind == "keep" for change in payload.changes):
+        raise AppError(
+            422,
+            "审阅草稿没有任何拆分/合并变更；歧义必须写成 split 或 merge，"
+            "并带 proposed_segments",
+            "MAPPING_REVIEW_NO_ACTIONABLE_CHANGES",
+        )
     chapter_map = _chapter_map(breakdown.chapters or [])
     changes = [
         _enrich_change(change, chapter_map)

@@ -257,6 +257,89 @@ def save_page_image(
     return _upload_url(upload_dir, target)
 
 
+class _InMemoryUpload:
+    """把外部接口传回的字节包装成 UploadFile 的最小替身。"""
+
+    def __init__(self, data: bytes, filename: str) -> None:
+        self.filename = filename
+        self.file = io.BytesIO(data)
+
+
+def _ingest_filename(
+    data: bytes, filename: str | None, content_type: str | None
+) -> str:
+    """给回传图片生成安全文件名：优先用调用方文件名，否则按图片头推断。"""
+    actual_type = detect_image_type(data[:16])
+    if actual_type is None:
+        raise AppError(
+            422,
+            "图片内容不是有效的 JPG、PNG 或 WebP",
+            "INVALID_IMAGE_TYPE",
+        )
+    if filename:
+        safe_name = Path(filename).name
+        extension = Path(safe_name).suffix.lower()
+        expected_type = _EXTENSION_TO_TYPE.get(extension)
+        if expected_type is None:
+            raise AppError(
+                422, "仅支持 JPG、PNG、WebP 格式的图片", "INVALID_IMAGE_TYPE"
+            )
+        if expected_type != actual_type:
+            raise AppError(
+                422, "文件扩展名与图片内容不一致", "IMAGE_TYPE_MISMATCH"
+            )
+        return safe_name
+    if content_type:
+        subtype = content_type.split(";")[0].strip().lower()
+        if subtype == "image/jpeg":
+            return "image.jpg"
+        if subtype == "image/png":
+            return "image.png"
+        if subtype == "image/webp":
+            return "image.webp"
+    return f"image.{actual_type}"
+
+
+def save_page_image_bytes(
+    data: bytes,
+    upload_dir: Path,
+    story_id: int,
+    page_number: int,
+    chapter_number: int | None = None,
+    filename: str | None = None,
+    content_type: str | None = None,
+) -> str:
+    """保存外部接口回传的分镜图字节；同页重复回传覆盖旧图。"""
+    name = _ingest_filename(data, filename, content_type)
+    return save_page_image(
+        _InMemoryUpload(data, name),
+        upload_dir,
+        story_id,
+        page_number,
+        chapter_number,
+    )
+
+
+def save_chapter_asset_bytes(
+    data: bytes,
+    upload_dir: Path,
+    story_id: int,
+    chapter_number: int,
+    kind: str,
+    filename: str | None = None,
+    content_type: str | None = None,
+) -> str:
+    """保存外部接口回传的章节封面/引导卡字节。"""
+    name = _ingest_filename(data, filename, content_type)
+    return save_chapter_asset(
+        _InMemoryUpload(data, name),
+        upload_dir,
+        story_id,
+        chapter_number,
+        kind,
+    )
+
+
 def delete_page_image(
     upload_dir: Path, story_id: int, page_number: int
 ) -> None:
@@ -402,14 +485,122 @@ def chapter_asset_url(
     if kind not in CHAPTER_ASSET_KINDS:
         return None
     for extension in PAGE_IMAGE_EXTENSIONS:
-        if _chapter_asset_path(
+        path = _chapter_asset_path(
             upload_dir, story_id, chapter_number, kind, extension
-        ).is_file():
+        )
+        if path.is_file():
+            # 文件名固定，覆盖上传后必须靠版本参数让浏览器重新取图。
+            stat = path.stat()
+            version = f"{stat.st_mtime_ns}-{stat.st_size}"
             return (
                 f"/uploads/chapters/{story_id}/"
-                f"chapter-{chapter_number}-{kind}.{extension}"
+                f"chapter-{chapter_number}-{kind}.{extension}?v={version}"
             )
     return None
+
+
+_CHAPTER_ARCHIVE_PATTERN = re.compile(
+    r"^chapter-(\d+)-(cover|guide)-(\d+)\.(jpg|png|webp)$"
+)
+
+
+def chapter_asset_archive_dir(upload_dir: Path, story_id: int) -> Path:
+    return upload_dir / "chapters-archive" / str(story_id)
+
+
+def archive_chapter_asset(
+    upload_dir: Path,
+    story_id: int,
+    chapter_number: int,
+    kind: str,
+) -> None:
+    """覆盖前把当前章节封面 / 引导卡复制到归档目录；不存在时静默返回。"""
+    if kind not in CHAPTER_ASSET_KINDS:
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    for extension in PAGE_IMAGE_EXTENSIONS:
+        source = _chapter_asset_path(
+            upload_dir, story_id, chapter_number, kind, extension
+        )
+        if not source.is_file():
+            continue
+        target_dir = chapter_asset_archive_dir(upload_dir, story_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(
+            source,
+            target_dir / f"chapter-{chapter_number}-{kind}-{stamp}.{extension}",
+        )
+
+
+def list_chapter_asset_archives(
+    upload_dir: Path,
+    story_id: int,
+    chapter_number: int,
+    kind: str,
+) -> list[dict]:
+    if kind not in CHAPTER_ASSET_KINDS:
+        return []
+    target_dir = chapter_asset_archive_dir(upload_dir, story_id)
+    if not target_dir.is_dir():
+        return []
+    prefix = f"chapter-{chapter_number}-{kind}-"
+    items: list[dict] = []
+    for path in target_dir.iterdir():
+        if not path.is_file() or not path.name.startswith(prefix):
+            continue
+        match = _CHAPTER_ARCHIVE_PATTERN.fullmatch(path.name)
+        if match is None or match.group(2) != kind:
+            continue
+        if match.group(1) != str(chapter_number):
+            continue
+        stat = path.stat()
+        items.append(
+            {
+                "filename": path.name,
+                "url": f"/uploads/chapters-archive/{story_id}/{path.name}",
+                "bytes": stat.st_size,
+                "created_at": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat().replace("+00:00", "Z"),
+            }
+        )
+    items.sort(key=lambda item: item["created_at"], reverse=True)
+    return items
+
+
+def restore_chapter_asset_archive(
+    upload_dir: Path,
+    story_id: int,
+    chapter_number: int,
+    kind: str,
+    filename: str,
+) -> str:
+    """把归档图恢复为当前章节封面 / 引导卡；恢复前先归档当前图。"""
+    if kind not in CHAPTER_ASSET_KINDS:
+        raise AppError(422, "不支持的章节图片类型", "INVALID_CHAPTER_ASSET_KIND")
+    match = _CHAPTER_ARCHIVE_PATTERN.fullmatch(Path(filename).name)
+    if match is None:
+        raise AppError(422, "归档文件名不合法", "INVALID_ARCHIVE_FILENAME")
+    if match.group(1) != str(chapter_number) or match.group(2) != kind:
+        raise AppError(422, "归档文件与目标章节不匹配", "ARCHIVE_TARGET_MISMATCH")
+    source = chapter_asset_archive_dir(upload_dir, story_id) / match.group(0)
+    if not source.is_file():
+        raise AppError(404, "归档图片不存在", "ARCHIVE_NOT_FOUND")
+    archive_chapter_asset(upload_dir, story_id, chapter_number, kind)
+    extension = match.group(4)
+    for other in PAGE_IMAGE_EXTENSIONS:
+        if other != extension:
+            _chapter_asset_path(
+                upload_dir, story_id, chapter_number, kind, other
+            ).unlink(missing_ok=True)
+    target = _chapter_asset_path(
+        upload_dir, story_id, chapter_number, kind, extension
+    )
+    _write_atomic(target, source.read_bytes())
+    return (
+        f"/uploads/chapters/{story_id}/"
+        f"chapter-{chapter_number}-{kind}.{extension}"
+    )
 
 
 def save_chapter_asset(
@@ -423,6 +614,7 @@ def save_chapter_asset(
     if kind not in CHAPTER_ASSET_KINDS:
         raise AppError(422, "不支持的章节图片类型", "INVALID_CHAPTER_ASSET_KIND")
     actual_type, data = _validate_and_read_image(upload, MAX_PAGE_IMAGE_BYTES)
+    archive_chapter_asset(upload_dir, story_id, chapter_number, kind)
     for extension in PAGE_IMAGE_EXTENSIONS:
         if extension != actual_type:
             _chapter_asset_path(
@@ -532,6 +724,41 @@ def save_character_asset(
     return filename
 
 
+def save_character_asset_bytes(
+    data: bytes,
+    upload_dir: Path,
+    story_id: int,
+    old_filename: str | None = None,
+) -> str:
+    """保存服务端生成的角资产图字节；替换时删除旧图。"""
+    if not data:
+        raise AppError(422, "图片内容为空", "EMPTY_FILE")
+    if len(data) > MAX_PAGE_IMAGE_BYTES:
+        raise AppError(
+            413,
+            f"图片大小不能超过 {MAX_PAGE_IMAGE_BYTES // (1024 * 1024)}MB",
+            "FILE_TOO_LARGE",
+        )
+    actual_type = detect_image_type(data[:16])
+    if actual_type is None:
+        raise AppError(422, "文件内容不是有效的 JPG、PNG 或 WebP 图片", "INVALID_IMAGE_TYPE")
+    filename = f"{uuid.uuid4().hex}.{actual_type}"
+    _write_atomic(_character_asset_dir(upload_dir, story_id) / filename, data)
+    if old_filename:
+        delete_character_asset(upload_dir, story_id, old_filename)
+    return filename
+
+
+def character_asset_path(
+    upload_dir: Path, story_id: int, filename: str | None
+) -> Path | None:
+    """角色资产图的本地路径；文件名不合法或文件不存在时返回 None。"""
+    if not filename or not CHARACTER_ASSET_FILENAME_PATTERN.fullmatch(filename):
+        return None
+    path = _character_asset_dir(upload_dir, story_id) / filename
+    return path if path.is_file() else None
+
+
 def delete_character_asset(
     upload_dir: Path, story_id: int, filename: str | None
 ) -> None:
@@ -623,9 +850,18 @@ def _safe_filename_part(value: str, fallback: str) -> str:
     return cleaned or fallback
 
 
+def upload_url_to_path(upload_dir: Path, url: str | None) -> Path | None:
+    """公开的 URL 转本地路径；供别名水印等按 image_url 定位文件。"""
+    return _upload_url_to_path(upload_dir, url)
+
+
 def _upload_url_to_path(upload_dir: Path, url: str | None) -> Path | None:
     """把 /uploads/... 访问地址还原成本地文件路径，并防止越出上传目录。"""
-    if not url or not url.startswith("/uploads/"):
+    if not url:
+        return None
+    # 章节资源 URL 带 ?v= 缓存版本；本地路径只看问号前的部分。
+    url = url.split("?", 1)[0]
+    if not url.startswith("/uploads/"):
         return None
     try:
         path = (upload_dir / url[len("/uploads/") :]).resolve()

@@ -4,8 +4,9 @@
 规则（按用户约定）：
 - 一章 = 1 封面 + 1..16 正文 + 1 引导卡，总图 <= 18；
 - 章节按对照表顺序覆盖全部未弃用段，不重不漏；
-- 封面主旁白 < 15 个汉字、副旁白 < 35 个汉字（标点不计）；
-- 主旁白标红词必须内嵌在主旁白里。
+- 封面主旁白 ≤12 个汉字、副旁白 < 35 个汉字（标点不计）；
+- 主旁白标红词必须内嵌在主旁白里；
+- 非最后一章引导卡主文案 ≤12 个汉字且必须包含「关注我」。
 
 用法：
   python3 chapter_check.py --story-id 3
@@ -27,6 +28,7 @@ DEFAULT_API = "http://127.0.0.1:8123"
 IGNORED = re.compile(r'[\s，。！？；：、「」『』“”‘’（）()…—·,.!?;:"\'-]')
 MAX_CONTENT_PAGES = 16
 MAX_TOTAL_IMAGES = 18
+MAX_GUIDE_TEXT_CHARS = 12
 
 
 def count_chars(text: str) -> int:
@@ -69,6 +71,7 @@ def main() -> int:
         issues.append("chapters 为空：先执行「章节规划」")
 
     ordered: list[int] = []
+    last_number = chapters[-1].get("chapter_number") if chapters else None
     for index, chapter in enumerate(chapters, start=1):
         number = chapter.get("chapter_number")
         title = (chapter.get("title") or "").strip()
@@ -120,9 +123,9 @@ def main() -> int:
             issues.append(f"第 {number} 章封面副旁白为空")
         main_count = count_chars(main)
         sub_count = count_chars(sub)
-        if main_count >= 15:
+        if main_count > 12:
             issues.append(
-                f"第 {number} 章封面主旁白 {main_count} 字，要求 < 15"
+                f"第 {number} 章封面主旁白 {main_count} 字，要求 ≤12"
             )
         if sub_count >= 35:
             issues.append(
@@ -136,8 +139,17 @@ def main() -> int:
             )
 
         guide = chapter.get("guide") or {}
-        if not (guide.get("text") or "").strip():
+        guide_text = (guide.get("text") or "").strip()
+        if not guide_text:
             issues.append(f"第 {number} 章引导卡主文案为空")
+        elif number != last_number:
+            if "关注我" not in guide_text:
+                issues.append(f"第 {number} 章引导卡主文案未包含「关注我」")
+            guide_count = count_chars(guide_text)
+            if guide_count > MAX_GUIDE_TEXT_CHARS:
+                issues.append(
+                    f"第 {number} 章引导卡主文案 {guide_count} 字，要求 ≤12"
+                )
         if not (guide.get("sub_text") or "").strip():
             issues.append(f"第 {number} 章引导卡副文案为空")
 
@@ -170,7 +182,7 @@ def main() -> int:
         print("\n❌ 未通过：先修章节规划，再写回。")
         return 1
 
-    print("\n✅ 通过：章节顺序与覆盖正确，每章不超过 18 张，封面文字符合要求。")
+    print("\n✅ 通过：章节顺序与覆盖正确，每章不超过 18 张，封面文字与引导卡主文案符合要求。")
     return 0
 
 

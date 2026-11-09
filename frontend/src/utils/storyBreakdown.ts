@@ -54,7 +54,55 @@ const COMMON_DATA_RULES = (apiBase: string, storyId: number) => `【数据获取
 3. 若后端未启动导致请求失败，改为直接读取项目根目录下的 SQLite：\`sqlite3 data/workbench.db "SELECT name, content, art_style_id FROM stories WHERE id = ${storyId};"\`；画风见 \`app_settings\` 表中 key 为 \`art_styles\` 的 JSON。
 4. 两种方式都读不到时，直接告诉我读取失败的原因，不要向我索要原文，也不要自行编造故事。
 5. 故事记录中的 art_style_name 与 art_style_content 即该故事选用的画风；若为空（未选择画风或画风已被删除），先告诉我并让我重新选择，不要自行编造，也不要改用其他画风。
-6. 原文结尾若是我说明过的刻意付费卡点、悬念留白或未完结章节，保留原结尾，不补写、不扩写；若没有说明且句子戛然而止，先告知我并停止。`
+6. 原文结尾若是我说明过的刻意付费卡点、悬念留白或未完结章节，保留原结尾，不补写、不扩写；若没有说明且句子戛然而止，先告知我并停止。
+
+【提示词模板】
+正文页和章节封面的最终 image_prompt 必须调用 \`POST ${apiBase}/api/settings/prompt-templates/render\` 生成（正文 template_type=body，封面 template_type=cover）；不要手写【画风】【文字区】【页码】【封面模式】【负面提示词】。封面统一走「原画风 + 封面专用冲击层」：冲击线和关键轮廓用较粗黑色手绘线，脸和皮肤保持淡色铅笔柔和质感；冲击层至少 3 条粗黑集中手绘射线（有抖动感）+ 至少 2 处可辨锯齿漫符；content 必须写清冲击线的起点/方向/密度/保护区，以及本页 1–3 个背景元素名和排除清单。背景统一走浅米纸底简化标准。不整体提高对比度/压暗背景。引导卡暂不走模板。`
+
+/**
+ * 角色卡模式：在正文、封面、引导卡之前，一次性拆出整篇故事的全部角色卡。
+ *
+ * 角色卡是生图变量 {{角色名}} 的唯一事实源；已有角色卡默认保留，
+ * 只补缺失角色，避免覆盖用户在生图平台同步回来的外形调整。
+ */
+export function buildCharacterCardsPrompt(storyId: number): string {
+  const apiBase = resolveApiBase()
+  return `请使用 ${STORY_BREAKDOWN_SKILL} 技能的「角色卡」模式（.claude/skills/${STORY_BREAKDOWN_SKILL}/SKILL.md），为故事 ID ${storyId} 一次性拆出整篇故事的全部角色卡，并写回 characters。不要生成正文、分镜页、章节封面或引导卡，不要修改 optimized_content、mapping、chapters、pages。
+
+${COMMON_DATA_RULES(apiBase, storyId)}
+
+【硬规则】
+1. 只按 optimized_content 拆角色。optimized_content 为空时停止，告诉我先执行「分镜对照」生成优化文；不要从原始故事直接编角色。
+2. 默认补齐，不覆盖：已有角色卡原样保留，只补缺失角色。只有我明确说「全部重拆角色卡」时，才允许替换整份 characters，并在写回前列出将被替换的卡片等我确认。
+3. 按整篇 optimized_content 识别，并结合 mapping 的 summary 检查后段才出场的角色，不要只拆前几章出现的人。第一人称主角统一命名为「我」。有台词、有独立动作或反复出场的具名角色都要建卡；只被提及、不会在画面中出场的角色不建卡。
+4. 没有名字但会反复出场的群演（男模、同事、保镖等）用稳定称呼建一张群像卡，避免每页临时编外形。
+5. 同一角色跨年龄、跨时代且外形差异大时拆成两张卡，在 role 里标明时期（如「十九岁」「婚后」）；正文页按时间线引用对应变量，不要用一张卡硬覆盖两个年龄。
+6. 角色卡最多 20 张，name 唯一且全程一致。
+7. appearance 第一句必须显式写「性别：男」或「性别：女」，群像卡写「性别：男女混合」并说明固定成员构成；再覆盖发型、长相、年龄感、服装、配饰、体态六项。不得只靠姓名、称谓或「成年女性」基准暗示性别。女性角色按技能【角色设定与变量】的女性基准写；不写剧情、心理、镜头；不写「同上」「见前文」。
+8. 角色卡是唯一事实源：正文和封面的生图提示词只引用 {{角色名}} 变量，不重复展开外形。
+
+【写回】
+PATCH \`${apiBase}/api/stories/${storyId}/breakdown\`，只写 characters：
+{
+  "characters": [
+    {"name": "我", "role": "主角", "appearance": "性别：男/女；发型、长相、年龄感、服装、配饰、体态……"}
+  ]
+}
+不要写 pages / mapping / chapters / optimized_content；已有角色卡不要覆盖。
+
+【自检】
+1. name 唯一、非空，1–20 张；
+2. 优化文中有台词或独立动作的具名角色都有卡；
+3. 没有把只提名字、不出场的角色建成卡；
+4. 每张卡的 appearance 开头都有显式性别（群像卡为男女混合），且六项齐全；
+5. 没有未登记的角色变量。
+
+【输出要求】
+1. 先输出角色表：角色名 / 性别 / 身份 / 一句话外形 / 出场范围（哪几章或哪个时间线）。
+2. 说明是新增还是补齐。
+3. 写回成功后输出：\`角色卡已写回工作台，请确认后再生成正文、封面和引导卡。\`
+4. 停下来等我确认。`
+}
 
 /**
  * 第一步：只生成分镜对照表，不生成分镜头脚本。
@@ -65,6 +113,34 @@ const COMMON_DATA_RULES = (apiBase: string, storyId: number) => `【数据获取
 export function buildStoryMappingPrompt(storyId: number): string {
   const apiBase = resolveApiBase()
   return `请使用 ${STORY_BREAKDOWN_SKILL} 技能的「分镜对照」模式（.claude/skills/${STORY_BREAKDOWN_SKILL}/SKILL.md），对故事 ID 为 ${storyId} 的故事先输出分镜对照表。这一步只做对照，不要生成分镜头脚本，不要写回分镜页。
+
+【先走 mapping-director】
+拆分或复核先交给 \`.claude/agents/mapping-director.md\`（propose 或 review 模式），主会话只负责 mapping_check 与写回。无法调用子代理时明确说明，不要静默自己拆。
+
+【流程回执（必须输出）】
+1. 开始拆分前说明：已启动 mapping-director propose；如果无法启动，立即停止，不要自己拆。
+2. 写回前必须再开一个**全新的** mapping-director review 上下文（或 storyboard-director）审最终方案；同一个提案上下文不能给自己盖章。
+3. 写回前运行 mapping_check，贴出通过/警告结果。
+4. 写回后输出回执：
+   - 提案：mapping-director
+   - 独立审阅：<agent 名称 / 未审>
+   - mapping_check：通过 / 几条警告
+   - 对照表页数
+   - 状态：待用户确认（不要自动确认，也不要把 mapping 标成已确认）
+5. 没有 agent 提案、或没有独立审阅时，不得写回 mapping。
+
+【歧义边界 → 审阅草稿】
+1. mapping-director 拆分时要额外列出“拿不准”的边界：拆/合两可、跨场景、台词超过 2 组、动作链切断等。每处给出当前方案和备选方案。
+2. 写回 mapping 后，立刻把这些歧义写成审阅草稿，调用 PUT \`${apiBase}/api/stories/${storyId}/breakdown/mapping-review\`，请求体 {"changes":[...]}，不要只在聊天里逐条问用户。
+3. **每条歧义必须是真实的 split 或 merge 变更，并带 proposed_segments**；禁止只用 keep 占位，也禁止把“当前/备选/理由”塞进 reason 就算一条变更。keep 只用于混合草稿里明确“不改”的少数项，不能单独构成草稿。
+   reason 里禁止出现 L1、L85、atom、line 这类内部编号；只能用用户能看到的「第X段」和原文短句来说明。
+4. 变更示例：
+   {"id":"split-30","kind":"split","risk":"high","old_page_numbers":[30],
+    "proposed_segments":[{"source_text":"前半段原文","summary":"…","paragraph":"第47段","part":"1/2"},
+                         {"source_text":"后半段原文","summary":"…","paragraph":"第47段","part":"2/2"}],
+    "reason":"一个镜头放不下三个时间点。"}
+5. 没有歧义时不用建草稿，但回执要写“无歧义边界”。
+6. 用户处理完审阅并应用后，才允许进入「分镜头脚本」。
 
 ${COMMON_DATA_RULES(apiBase, storyId)}
 
@@ -314,7 +390,7 @@ ${scopeRule}
 1. 读取 breakdown 里的 mapping；如果 mapping 为空，停下来告诉我：先执行「分镜对照」，不要自己拆页。
 2. ${pageStateCheck}
 3. 读取 optimized_content、characters、art_style_name/content；画风为空或失效时停下来告诉我。
-4. 如果 characters 为空，先按技能【角色设定与变量】拆出角色卡并 PATCH 写回；已有角色卡则沿用，不要覆盖。
+4. 如果 characters 为空，立即停止，告诉我先执行「角色卡」模式拆出全部角色卡；不要在这里临时拆卡，也不要生成分镜页。已有角色卡直接沿用，不要覆盖。
 
 【逐页生成】
 只处理本次范围内的 mapping 项，按对应关系逐页生成：
@@ -326,12 +402,12 @@ ${targetText}
 - narration_main：本页内容的提炼标题，**不超过 15 个汉字（标点不计）**，要吸引人，不要独立发挥。
 - narration_highlight：从主旁白或副旁白中选连续片段；没有就留空。
 - 其余字段照旧：characters、character_review、scene、action_state、change_note、dialogues、shot_type、camera_angle、image_prompt。
-- image_prompt 按技能规定的 7 类分行书写，角色外形用 {{角色名}} 变量；【文字区】用技能里的新模板。
+- image_prompt 必须调用 \`POST ${apiBase}/api/settings/prompt-templates/render\`（template_type=body）生成；context 传 content（本页【画面】描述，含本页 1–3 个背景元素名与排除清单）、character_consistency、narration_main、narration_sub、narration_highlight、dialogues、page_number（章内页码）、chapter_number（本章章号）。角色外形用 {{角色名}} 变量；不要手写【画风】【文字区】【页码】【负面提示词】。
 
 【写回】
 1. 写回前自检：${selfCheck}
 ${writeBack}
-4. 不要 PATCH optimized_content / mapping；characters 为空时已按前置检查写入，已有角色卡不要覆盖。
+4. 不要 PATCH optimized_content / mapping / characters；角色卡必须已在「角色卡」模式中拆好，已有角色卡不要覆盖。
 5. 写回失败时重试 1 次；仍失败必须明确告诉我「结果仅在对话中，未能写入详情页」，不要静默忽略。
 
 【输出要求】
@@ -523,7 +599,7 @@ ${existingText}
 【前置检查】
 1. 读取 breakdown 的 mapping、chapters、pages；如果章节或对照段与上面不一致，立即停止并告诉我刷新。
 2. 检查每页的 mapping_page_number / chapter_number / chapter_page_number；不一致时不要写回。
-3. 如果 characters 为空，先按技能【角色设定与变量】拆出角色卡并 PATCH 写回；已有角色卡不要覆盖。
+3. 如果 characters 为空，立即停止，告诉我先执行「角色卡」模式拆出全部角色卡；不要在这里临时拆卡，也不要生成正文页。已有角色卡直接沿用，不要覆盖。
 4. 画风为空或失效时停止。
 
 【逐页生成】
@@ -533,13 +609,16 @@ ${existingText}
 - story_content：先写清楚本页故事内容，必须包含「谁 + 在哪 + 做了什么 + 结果/情绪」，它是副旁白的底稿。
 - narration_sub：以 story_content 为底稿写成画面文字，用主角第一人称，**< 50 个汉字（标点不计）**，允许 1–2 行（用换行符分行）；每页必须能独立看懂，保留姓名、地点、关键动作和结果/情绪；需要承接上一页时可加半句，但不能只写半句。
 - narration_main < 15 个汉字、narration_sub < 50 个汉字（标点不计），且不超过 2 行。
-- image_prompt 按技能规定的分类分行书写，角色外形用 {{角色名}} 变量；【文字区】用新模板；【页码】写章内页码。
+- 旁白禁用第三人称代词「他/她」（「其他」「吉他」除外），一律用角色姓名或「我」；已生图的旧页不改文字，只约束还没生图的新页。
+- 冲击层：按 SKILL 的「冲击层」评分卡判断；只在爆点 / 情绪高潮 / 反转且 ≥3 分时，在 image_prompt 增加【冲击层】分块；单章最多 2 页、不得相邻、回忆页优先不用；storyboard-director 会在生成后复核。冲击线只做局部强调，不改变背景环境亮度；冷调、夜景、回忆页可以降亮度，但必须保留可识别场景，不得压成纯黑；夜景用淡灰或浅灰蓝表现，暗部用中灰过渡，室内夜景保留暖光；负面词要包含「纯黑背景」。
+- image_prompt 必须调用 \`POST ${apiBase}/api/settings/prompt-templates/render\`（template_type=body）生成；context 传 content（本页【画面】描述，含本页 1–3 个背景元素名与排除清单）、character_consistency、narration_main、narration_sub、narration_highlight、dialogues、page_number（章内页码）、chapter_number（本章章号）。角色外形用 {{角色名}} 变量；不要手写【画风】【文字区】【页码】【负面提示词】。
+- 如果该页需要冲击层，在 render 返回的 prompt 末尾追加【冲击层】分块；模板不负责正文冲击层。
 
 【写回】
 1. 写回前自检：运行 \`.claude/skills/story-breakdown/script_check.py --story-id ${storyId} --chapter ${chapterNumber}\`（分镜尚未写回时用 \`--input\` 传入本地 JSON，JSON 必须包含本章全部正文页，包括保留的已有页），未通过不得写回。
 2. 只对本次目标全局页码逐页 DELETE \`${apiBase}/api/stories/${storyId}/breakdown/pages/{全局页码}\`（目标页码：${pendingCsv}）；**不要 DELETE 全部 pages**，不要动其他章节。
 3. 逐页 PUT \`${apiBase}/api/stories/${storyId}/breakdown/pages/{全局页码}\`，写入目标页全部字段与章节字段。
-4. 不要 PATCH optimized_content / mapping / chapters；已有角色卡不要覆盖。
+4. 不要 PATCH optimized_content / mapping / chapters / characters；角色卡必须已在「角色卡」模式中拆好，已有角色卡不要覆盖。
 
 【生成后自动审片】
 写回完成后不要停，按以下顺序继续：
@@ -572,12 +651,12 @@ ${COMMON_DATA_RULES(apiBase, storyId)}
 4. chapter_number 从 1 连续编号；title 简洁、有吸引力，<=50 字。
 5. cover 文字：
    - label：\`第X章 · 标题\`；
-   - narration_main：主旁白，<15 个汉字，必须是钩子；
+   - narration_main：主旁白，≤12 个汉字，必须是钩子；字多时先缩短文案，不压缩字号；
    - narration_highlight：从主旁白里选连续片段作为标红词；
-   - narration_sub：副旁白，<35 个汉字；第 1 章写 premise（前情/设定），第 2 章起写上一章的前情提要；
+   - narration_sub：副旁白，<35 个汉字；第 1 章写 premise + 代价/悬念，第 2 章起写上一章未解决的后果，不写平铺直叙的前情提要；
    - image_prompt 先留空，之后单独生成。
 6. guide 文字：
-   - 非最后一章：text=\`关注我，看更多重生爽文\`，sub_text=\`下一章：<下一章钩子>\`；
+   - 非最后一章：text 由本章结尾钩子撰写，≤12 个汉字（标点不计），必须包含「关注我」，例如「关注我，看下一章反转」「关注我，别错过结局」；不得写死题材词，非重生文不得出现「重生」；sub_text=\`下一章：<下一章钩子>\`；
    - 最后一章：text=\`想看后续？来我主页\`，sub_text=\`关注我，不迷路\`；
    - image_prompt 先留空。
 7. 正文页码按章内 1..N 计算；封面和引导卡不显示页码。
@@ -594,13 +673,14 @@ PATCH \`${apiBase}/api/stories/${storyId}/breakdown\`，写入 chapters 数组�
 不要写 pages，不要 PATCH mapping / characters / optimized_content。
 
 【自检】
-运行 \`.claude/skills/story-breakdown/chapter_check.py --story-id ${storyId}\`；章节覆盖、每章 18 张上限、封面文字字数未通过时先修，再继续。
+运行 \`.claude/skills/story-breakdown/chapter_check.py --story-id ${storyId}\`；章节覆盖、每章 18 张上限、封面文字字数、引导卡主文案未通过时先修，再继续。
 
 【输出要求】
 1. 先输出章节规划表：章节 / 对照段范围 / 正文页数 / 总图数 / 本章结尾钩子。
 2. 写回成功后输出：\`章节规划已写回工作台，请确认后再生成正文、封面和引导卡。\`
 3. 如果已有 pages，提醒我：章节划分变化后，旧正文页的章节字段可能失效，需要时先清空正文页再重新生成。
-4. 停下来等我确认。`
+4. 如果 characters 为空，提醒我先执行「角色卡」模式；不要生成正文、封面或引导卡。
+5. 停下来等我确认。`
 }
 
 /** 生成某一章的封面生图提示词并写回。 */
@@ -610,29 +690,60 @@ export function buildChapterCoverInstructionPrompt(
   chapter: StoryboardChapterRead,
 ): string {
   const apiBase = resolveApiBase()
-  return `请使用 ${STORY_BREAKDOWN_SKILL} 技能，为故事 ID ${storyId} 的第 ${chapterNumber} 章《${chapter.title}》生成「章节封面」生图提示词，并写回 chapters[${chapterNumber - 1}].cover.image_prompt。
+  return `请使用 ${STORY_BREAKDOWN_SKILL} 技能，为故事 ID ${storyId} 的第 ${chapterNumber} 章《${chapter.title}》生成「章节封面」的 3 个变体提示词。先不要写回，生成后给我看，等我选定再落库。
 
 ${COMMON_DATA_RULES(apiBase, storyId)}
 
-【封面文字（必须逐字使用）】
+【前置检查】
+1. 读取 breakdown.characters；如果为空，立即停止，告诉我先执行「角色卡」模式拆出全部角色卡，不要生成封面提示词。
+2. 封面只引用已登记的角色变量；不要写未登记角色，也不要临时拆卡。
+
+【封面文字】
 - 顶部小字：${chapter.cover.label}
 - 主旁白：${chapter.cover.narration_main}
 - 标红词：${chapter.cover.narration_highlight}
 - 副旁白：${chapter.cover.narration_sub}
 
-【画面要求】
-1. 3:4 竖版，一整幅完整单画面，无边框、无分格、无标题框。
-2. 故事主角必须出现在画面中，沿用该故事的画风与角色设定；角色外形用 {{角色名}} 变量引用。
-3. 这是章节封面，不是正文分镜：构图要有封面感，突出主角与本章情绪；不要出现对话气泡。
-4. 【文字区】顶部小字写「${chapter.cover.label}」；主旁白用大号手写体写「${chapter.cover.narration_main}」，其中仅「${chapter.cover.narration_highlight}」为红色手写加粗，必须内嵌在整句中，绝对禁止单独另起一行；副旁白用较小手写体写「${chapter.cover.narration_sub}」。
-5. 封面不显示页码；除上述文字外不得出现任何其他文字、水印、logo、边框。
-6. 按技能规定输出【画风】【画面】【角色一致性】【画面形式】【文字区】【负面提示词】分类，不要写【页码】。
+【封面文案前置】
+1. 读取本章发文标题：GET \`${apiBase}/api/stories/${storyId}/post-config?chapter=${chapterNumber}\`。
+2. 如果当前主标题还是章节规划时的默认值，或与发文标题明显不同钩子（例如发文写辞职/办公室恋情，封面写他记得我），立即停止，提醒我：先回工作台编辑章节，点「AI 生成封面文案（3 选 1）」选定并保存，再重新复制本指令；不要用旧文案直接出图。
+3. 如果我明确说“文案已选好/已保存”，或封面主标题与发文标题同钩子，才继续生成 3 个画面变体。
 
-【写回】
-1. 先读取 breakdown.chapters，只修改第 ${chapterNumber} 章的 cover.image_prompt，其他章节、其他字段原样保留。
-2. PATCH \`${apiBase}/api/stories/${storyId}/breakdown\`，写入完整 chapters 数组。
-3. 不要修改 mapping、pages、characters、optimized_content。
-4. 输出完整封面提示词，并告诉我已写回。`
+【封面点击钩子】
+0. 先读封面主标题和副标题，提炼出这一张的核心冲突（谁和谁、什么禁忌/代价/信息差），再决定关键道具、场景和表情。画面必须和封面文字讲同一个钩子，不能沿用与标题无关的旧场景（例如标题写辞职/办公室恋情，画面却是咖啡/表扬）。
+1. 必须生成 3 个不同钩子的变体：
+   - A 道具特写：关键道具占前景约 1/3，人物表情在中景。
+   - B 真相揭示：X 光屏、手机屏幕、文件等揭示关键信息，人物反应在旁。
+   - C 面对面强化：低机位近距离双人，表情张力最大化，关键道具在两人之间。
+2. 每个变体必须包含：
+   - 1 个关键道具：警报按钮、X 光屏、车票、离婚协议、治疗单等，放在前景或视觉中心。
+   - 1 个强表情：眼神锋利、含泪、挑衅、惊恐、下颌绷紧；禁止「神情沉静」「安静而紧绷」「氛围紧张而克制」。
+   - 封面模式：统一走「原画风 + 封面专用冲击层」；背景只留淡线提示、不得压成纯黑；人物周围加入漫画黑色震动短线、放射状集中冲击线、锯齿情绪漫符；夸张表情、动态张力、手绘涂鸦感；冲击线和关键轮廓用较粗的黑色手绘线，人物面部与皮肤仍保持淡色铅笔的柔和质感，不做全图粗黑描边；不整体提高对比度、不压暗背景。
+   - 冲击层最低力度：至少 3 条粗黑集中的手绘射线，线条有手绘抖动感，不是细线、不是均匀速度线；至少 2 处尺寸清晰可辨的锯齿情绪漫符，不是小点。
+   - 线条 choreography：每个变体必须在 \`content\` 里写清冲击线从哪个关键道具/动作/视线出发、朝哪个方向、密度多少（少量/只围绕谁/不铺满）、哪些区域不能进（脸、眼睛、文字、关键道具轮廓）；线要跟构图和动作走，不能随机贴边。
+   - 背景：浅米色素描纸底，与顶部文字带同色；只保留 1–3 个点明地点与动作的关键环境元素，用浅棕褐色淡铅笔线轮廓勾出；其余元素逐项写「没有 X、没有 Y」；不压暗、不发黑、无暗部；**人物/道具周围的冲击线不算背景装饰，不得删除或减弱**。\`content\` 只填本页元素名和排除清单，背景通用标准由全局规则注入，不要整段复述背景模板。
+   - 副标题：<35 个汉字，写代价/反差/信息差。如果当前副旁白是前情说明，先给 2 个悬念改写选项，不要直接改。
+   - 文字区：顶部小字、主旁白 ≤12 字大号红黑、单行尽量占上部 60%–75% 宽度、主副标题至少留半个字高、标红内嵌、副旁白小字且字号不超过主标题 45%；主标题不被人物/道具/背景线遮挡；不显示页码。
+3. 禁止：低饱和淡雅、柔和暖光直接套封面；双人全身、脸太小；表情平静克制；没有关键道具；主标题字号偏小、排版拥挤；背景铺满场景、出现氛围人群或压暗；冲击线偏细、均匀得像速度线；锯齿漫符少于 2 处或小到看不清；冲击线随机贴边、铺满全图、糊成脏线或像贴图；涂鸦/冲击线遮挡脸、眼睛、文字或关键道具轮廓。
+4. 每个变体生成后，必须调用 \`POST ${apiBase}/api/settings/prompt-templates/render\`：
+   - template_type：\`cover\`；
+   - story_id：\`${storyId}\`；
+   - context：\`content\`（本变体【画面】描述，必须包含冲击线起点/方向/密度/保护区，以及本页 1–3 个背景元素名与排除清单）、\`character_consistency\`、\`narration_main\`、\`narration_sub\`、\`narration_highlight\`、\`label\`、\`chapter_number\`（本章章号）；
+   - 用返回的 \`prompt\` 作为该变体完整提示词；把返回的 \`applied_rules\` 和 \`rule_checks\` 一并交给封面导演审片；\`rule_checks\` 有 failed 时先修画面描述再重新 render；不要手写【画风】【文字区】【封面模式】【负面提示词】。
+5. 3 个变体只改变 \`content\` 里的构图、机位、道具、表情和线条起点/方向；其他文字字段保持一致。
+
+【生成后自动审片】
+1. 运行 \`cover-director\` 的 prompt 模式：读取 \`.claude/agents/cover-director.md\`，按 3 秒抓眼、情绪强度、悬念、色彩对比、关键道具、文字可读性、画风一致性评分。
+2. 通过线：3 秒抓眼、情绪强度、悬念均 ≥4，总分 ≥26/35；任一维度 <3 不通过。额外硬门槛：冲击层贴合度 1–5 分，<3 不通过（线是否从关键道具/动作/视线出发、方向是否服务构图、密度是否局部、脸和皮肤是否柔和、是否遮脸/眼睛/文字、是否达到至少 3 条粗黑射线 + 手绘抖动 + 至少 2 处可辨锯齿漫符）。
+3. 输出 3 个变体的评分表、冲击层贴合度、推荐变体、每个不通过变体的具体改法。
+4. 停下来等我选定，不要写回。
+
+【写回（我选定后）】
+1. 读取 breakdown.chapters，只修改第 ${chapterNumber} 章的 cover.image_prompt；其他章节、其他字段原样保留。
+2. 如果我同意副标题改写，一并更新 cover.narration_sub。
+3. PATCH \`${apiBase}/api/stories/${storyId}/breakdown\`，写入完整 chapters 数组。
+4. 运行 \`.claude/skills/story-breakdown/cover_check.py --story-id ${storyId} --chapter ${chapterNumber}\`。
+5. 不要修改 mapping、pages、characters、optimized_content；输出最终变体、评分和写回结果。`
 }
 
 /** 生成某一章的引导卡生图提示词并写回。 */
@@ -645,6 +756,10 @@ export function buildChapterGuideInstructionPrompt(
   return `请使用 ${STORY_BREAKDOWN_SKILL} 技能，为故事 ID ${storyId} 的第 ${chapterNumber} 章《${chapter.title}》生成「章节引导卡」生图提示词，并写回 chapters[${chapterNumber - 1}].guide.image_prompt。
 
 ${COMMON_DATA_RULES(apiBase, storyId)}
+
+【前置检查】
+1. 读取 breakdown.characters；如果为空，立即停止，告诉我先执行「角色卡」模式拆出全部角色卡，不要生成引导卡提示词。
+2. 引导卡只引用已登记的角色变量；不要写未登记角色，也不要临时拆卡。
 
 【引导卡文字（必须逐字使用）】
 - 主文案：${chapter.guide.text}

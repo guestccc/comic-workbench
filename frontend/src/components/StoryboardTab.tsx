@@ -7,24 +7,31 @@ import {
   Collapse,
   Empty,
   Form,
+  Image,
   Input,
   Modal,
   Select,
   Space,
   Switch,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import {
+  CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
   DiffOutlined,
   EditOutlined,
+  HistoryOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PictureOutlined,
 } from '@ant-design/icons'
 import StoryCompareModal from './StoryCompareModal'
 import ImageUpload from './ImageUpload'
+import AliasStampModal from './AliasStampModal'
+import PromptSnapshotDrawer from './PromptSnapshotDrawer'
 import { api, getErrorMessage } from '../api/client'
 import type {
   Story,
@@ -36,6 +43,10 @@ import type {
   StoryBreakdown,
 } from '../types'
 import { copyText } from '../utils/clipboard'
+import {
+  buildBatchImageIngestInstruction,
+  buildImageIngestInstruction,
+} from '../utils/imageIngest'
 import {
   formatImagePrompt,
   locateNarrationHighlight,
@@ -100,6 +111,24 @@ const PAGE_ROLE_OPTIONS = [
 ]
 
 /** 页面作用对应的标签颜色，未知值回退为默认色。 */
+/**
+ * 从生图提示词里读冲击层（黑线/放射线）标记。
+ * 页面没有独立字段，提示词里的【冲击层】分块是唯一事实源。
+ */
+function impactLevelOf(page: StoryboardPage): '强冲击' | '轻冲击' | '冲击层' | null {
+  const prompt = page.image_prompt || ''
+  const line = prompt
+    .split('\n')
+    .find((item) => item.startsWith('【冲击层】'))
+  if (!line) {
+    // 旧页没有分块，只能按冲击元素兜底识别
+    return /黑色震动短线|放射集中冲击线|锯齿情绪漫符/.test(prompt)
+      ? '冲击层'
+      : null
+  }
+  return /只保留|少量/.test(line) ? '轻冲击' : '强冲击'
+}
+
 const PAGE_ROLE_COLORS: Record<string, string> = {
   钩子封面: 'magenta',
   铺垫: 'blue',
@@ -211,8 +240,14 @@ export default function StoryboardTab({
   const [editOpen, setEditOpen] = useState(false)
   const [editingPage, setEditingPage] = useState<StoryboardPage | null>(null)
   const [pageSaving, setPageSaving] = useState(false)
+  const [promptHistoryPage, setPromptHistoryPage] = useState<StoryboardPage | null>(null)
 
   const [compareOpen, setCompareOpen] = useState(false)
+  /** 章节镜头图快速检查：只存本章页，弹窗只渲染图和编号 */
+  const [chapterGallery, setChapterGallery] = useState<{
+    title: string
+    pages: StoryboardPage[]
+  } | null>(null)
 
   // 分镜脚本按章节折叠：章节和页都默认收起，避免长列表一次铺开
   const [activeChapterKeys, setActiveChapterKeys] = useState<string[]>([])
@@ -222,6 +257,7 @@ export default function StoryboardTab({
   const [selectedPageNumbers, setSelectedPageNumbers] = useState<Set<number>>(
     new Set(),
   )
+  const [aliasOpen, setAliasOpen] = useState(false)
 
   // 页面被删除或重新生成后，清掉不存在的选中项
   useEffect(() => {
@@ -241,6 +277,9 @@ export default function StoryboardTab({
         .sort((left, right) => left.page_number - right.page_number),
     [breakdown, selectedPageNumbers],
   )
+  const aliasImageCount = (breakdown?.pages ?? []).filter(
+    (page) => page.image_url,
+  ).length
 
   const [optimizedOpen, setOptimizedOpen] = useState(false)
   const [optimizedText, setOptimizedText] = useState('')
@@ -258,6 +297,31 @@ export default function StoryboardTab({
       )
       message.success(
         `${pageDisplayLabel(page, breakdown?.chapters ?? [])} 生图提示词已复制`,
+      )
+    } catch {
+      message.error('复制失败，请手动选中后复制')
+    }
+  }
+
+  /** 复制「生成后回传成品图」的指令，给能发 HTTP 的生图 agent。 */
+  const handleCopyIngest = async (page: StoryboardPage) => {
+    const chapter = breakdown?.chapters.find(
+      (item) => item.chapter_number === page.chapter_number,
+    )
+    try {
+      await copyText(
+        buildImageIngestInstruction({
+          storyId: story.id,
+          storyName: story.name,
+          target: 'page',
+          chapterNumber: page.chapter_number,
+          chapterTitle: chapter?.title,
+          pageNumber: page.page_number,
+          chapterPageNumber: page.chapter_page_number,
+        }),
+      )
+      message.success(
+        `${pageDisplayLabel(page, breakdown?.chapters ?? [])} 回传指令已复制`,
       )
     } catch {
       message.error('复制失败，请手动选中后复制')
@@ -328,6 +392,54 @@ export default function StoryboardTab({
     }
   }
 
+  /** 批量加别名后刷新数据，并给正文页 URL 加版本号，避免浏览器显示旧图。 */
+  const handleAliasDone = async () => {
+    await onRefresh()
+    const version = Date.now()
+    const versions: Record<number, number> = {}
+    for (const page of breakdown?.pages ?? []) {
+      versions[page.page_number] = version
+    }
+    setImageVersions(versions)
+  }
+
+  /** 批量复制选中页的回传指令：一条批量接口，按 20 张自动分批。 */
+  const handleCopySelectedIngest = async () => {
+    if (selectedPages.length === 0) {
+      message.warning('请先勾选要回传的分镜页')
+      return
+    }
+
+    const total = selectedPages.length
+    const chapters = breakdown?.chapters ?? []
+    const text = buildBatchImageIngestInstruction(
+      selectedPages.map((page) => {
+        const chapter = chapters.find(
+          (item) => item.chapter_number === page.chapter_number,
+        )
+        return {
+          storyId: story.id,
+          storyName: story.name,
+          target: 'page' as const,
+          chapterNumber: page.chapter_number,
+          chapterTitle: chapter?.title,
+          pageNumber: page.page_number,
+          chapterPageNumber: page.chapter_page_number,
+        }
+      }),
+    )
+    if (!text) {
+      message.warning('没有可回传的正文页')
+      return
+    }
+    try {
+      await copyText(text)
+      message.success(`已复制 ${total} 页批量回传指令（按章节顺序）`)
+    } catch {
+      message.error('复制失败，请手动选中后复制')
+    }
+  }
+
   /** 上传 / 替换某页成品图；上传成功即视为该页完成。类型与大小由 ImageUpload 统一校验。 */
   const handleUploadImage = async (page: StoryboardPage, file: File) => {
     if (!breakdown) return
@@ -344,7 +456,7 @@ export default function StoryboardTab({
         [page.page_number]: Date.now(),
       }))
       message.success(
-        `${pageDisplayLabel(page, breakdown?.chapters ?? [])} 成品图已上传，标记为完成`,
+        `${pageDisplayLabel(page, breakdown?.chapters ?? [])} 成品图已上传，请确认图片是否正确`,
       )
       await onRefresh()
     } catch (error) {
@@ -630,7 +742,9 @@ export default function StoryboardTab({
 
   /** 生成某一章（或未分章）下的分镜页折叠项。 */
   const renderPageItems = (groupPages: StoryboardPage[]) =>
-    groupPages.map((page) => ({
+    groupPages.map((page) => {
+      const impact = impactLevelOf(page)
+      return {
       key: String(page.page_number),
       // 已上传成品图的页整行淡绿，扫一眼就能看出进度
       className: page.image_url ? 'storyboard-page-done' : undefined,
@@ -661,6 +775,11 @@ export default function StoryboardTab({
             </Tag>
           )}
           {page.is_flashback && <Tag color="blue">回忆页</Tag>}
+          {impact && (
+            <Tag color={impact === '强冲击' ? 'volcano' : 'gold'}>
+              {impact}
+            </Tag>
+          )}
           {page.camera_angle && <Tag color="cyan">{page.camera_angle}</Tag>}
           <Tag>{page.shot_type}</Tag>
           <Typography.Text
@@ -691,6 +810,13 @@ export default function StoryboardTab({
           >
             复制提示词
           </Button>
+          <Tooltip title="复制回传指令">
+            <Button
+              size="small"
+              icon={<CloudUploadOutlined />}
+              onClick={() => void handleCopyIngest(page)}
+            />
+          </Tooltip>
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -727,6 +853,11 @@ export default function StoryboardTab({
               </Tag>
             )}
             {page.is_flashback && <Tag color="blue">回忆页</Tag>}
+            {impact && (
+              <Tag color={impact === '强冲击' ? 'volcano' : 'gold'}>
+                {impact}
+              </Tag>
+            )}
             <Tag>{page.shot_type}</Tag>
             {page.camera_angle && <Tag color="cyan">{page.camera_angle}</Tag>}
             {page.characters.map((name) => (
@@ -847,6 +978,24 @@ export default function StoryboardTab({
                   >
                     复制提示词
                   </Button>
+                  <Button
+                    size="small"
+                    type="link"
+                    icon={<CloudUploadOutlined />}
+                    onClick={() => void handleCopyIngest(page)}
+                    style={{ paddingInline: 0 }}
+                  >
+                    复制回传指令
+                  </Button>
+                  <Button
+                    size="small"
+                    type="link"
+                    icon={<HistoryOutlined />}
+                    onClick={() => setPromptHistoryPage(page)}
+                    style={{ paddingInline: 0 }}
+                  >
+                    提示词历史
+                  </Button>
                 </div>
                 <div className="prompt-sections">
                   {parseImagePrompt(
@@ -869,7 +1018,8 @@ export default function StoryboardTab({
           </div>
         </div>
       ),
-    }))
+      }
+    })
 
   /** 章节内部（或未分章时）的分镜页折叠列表。 */
   const renderPageCollapse = (groupPages: StoryboardPage[]) => (
@@ -948,6 +1098,14 @@ export default function StoryboardTab({
           </Button>
           <Button
             size="small"
+            icon={<EditOutlined />}
+            disabled={aliasImageCount === 0}
+            onClick={() => setAliasOpen(true)}
+          >
+            批量加别名
+          </Button>
+          <Button
+            size="small"
             icon={<DeleteOutlined />}
             onClick={handleClearPages}
             disabled={breakdown.pages.length === 0}
@@ -985,6 +1143,14 @@ export default function StoryboardTab({
             onClick={() => void handleCopySelected()}
           >
             复制选中提示词
+          </Button>
+          <Button
+            size="small"
+            icon={<CloudUploadOutlined />}
+            disabled={selectedPages.length === 0}
+            onClick={() => void handleCopySelectedIngest()}
+          >
+            复制选中回传指令
           </Button>
           <Button
             size="small"
@@ -1070,6 +1236,22 @@ export default function StoryboardTab({
                       <Tag color="orange">待生成脚本</Tag>
                     )}
                   </div>
+                ),
+                extra: (
+                  <Button
+                    size="small"
+                    icon={<PictureOutlined />}
+                    disabled={group.pages.length === 0}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setChapterGallery({
+                        title: `第${group.chapter.chapter_number}章 · ${group.chapter.title}`,
+                        pages: group.pages,
+                      })
+                    }}
+                  >
+                    查看镜头图
+                  </Button>
                 ),
                 children:
                   group.pages.length > 0 ? (
@@ -1321,6 +1503,61 @@ export default function StoryboardTab({
           onChange={(event) => setOptimizedText(event.target.value)}
         />
       </Modal>
+
+      {/* 章节镜头图：只展示图和章内页码，方便快速检查成品图 */}
+      <Modal
+        title={chapterGallery ? `${chapterGallery.title} · 镜头图` : '镜头图'}
+        open={chapterGallery !== null}
+        onCancel={() => setChapterGallery(null)}
+        footer={null}
+        width={960}
+        destroyOnHidden
+      >
+        <Image.PreviewGroup>
+          <div className="chapter-gallery">
+            {chapterGallery?.pages.map((page) => {
+              const number =
+                page.chapter_page_number ?? page.page_number
+              return (
+                <div className="chapter-gallery-item" key={page.page_number}>
+                  {page.image_url ? (
+                    <Image
+                      src={pageImageSrc(page) ?? undefined}
+                      alt={`第${number}页`}
+                      className="chapter-gallery-image"
+                      preview={{ mask: '查看大图' }}
+                    />
+                  ) : (
+                    <div className="chapter-gallery-empty">未上传</div>
+                  )}
+                  <span className="chapter-gallery-number">
+                    第{number}页
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </Image.PreviewGroup>
+      </Modal>
+
+      <AliasStampModal
+        open={aliasOpen}
+        storyId={story.id}
+        defaultAlias={story.zhihu_alias}
+        imageCount={aliasImageCount}
+        onClose={() => setAliasOpen(false)}
+        onDone={handleAliasDone}
+      />
+      <PromptSnapshotDrawer
+        open={Boolean(promptHistoryPage)}
+        storyId={story.id}
+        targetType="body"
+        chapterNumber={promptHistoryPage?.chapter_number}
+        pageNumber={promptHistoryPage?.chapter_page_number}
+        onClose={() => setPromptHistoryPage(null)}
+        onRestored={() => void onRefresh()}
+      />
+
     </div>
   )
 }

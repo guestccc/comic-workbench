@@ -9,9 +9,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import re
 from pathlib import Path as FsPath
 from urllib.parse import quote
+
+import httpx
 
 from fastapi import APIRouter, Depends, File, Path, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
@@ -22,15 +26,27 @@ from ..config import (
     MAX_BREAKDOWN_PAGES,
     MAX_CHAPTERS,
     MAX_OPTIMIZE_ANALYZE_INPUT_CHARS,
+    MAX_PAGE_IMAGE_BYTES,
 )
 from ..crud import get_art_styles, resolve_deepseek_key
 from ..database import get_db
 from ..errors import AppError
-from ..models import Story, StoryBreakdown
+from ..models import Story, StoryBreakdown, StoryChapterPostConfig
 from ..schemas import (
+    ChapterAssetArchiveRead,
+    ChapterAssetArchiveRestoreResult,
     ChapterCoverOptimizeRequest,
     ChapterCoverOptimizeResult,
+    CoverCopyOptionsRequest,
+    CoverCopyOptionsResponse,
+    CharacterAssetBatchIngestItemResult,
+    CharacterAssetBatchIngestRequest,
+    CharacterAssetBatchIngestResponse,
     CharacterCard,
+    ImageBatchIngestItemResult,
+    ImageBatchIngestRequest,
+    ImageBatchIngestResponse,
+    ImageIngestPayload,
     CharacterCardRead,
     CharacterOptimizeRequest,
     CharacterSyncRequest,
@@ -50,6 +66,7 @@ from ..schemas import (
 )
 from ..services.deepseek import (
     analyze_optimization_changes,
+    generate_cover_copy_options,
     optimize_chapter_cover as generate_chapter_cover_optimization,
     stream_character_optimization,
     sync_character_reviews,
@@ -66,14 +83,20 @@ from ..services.files import (
     delete_story_character_assets,
     delete_story_page_images,
     group_photo_url,
+    list_chapter_asset_archives,
+    restore_chapter_asset_archive,
     organize_page_images,
     page_chapter_number,
     page_image_url,
     save_chapter_asset,
+    save_chapter_asset_bytes,
     save_character_asset,
+    save_character_asset_bytes,
     save_group_photo,
     save_page_image,
+    save_page_image_bytes,
 )
+from ..services.image_generations import delete_story_history
 from ..services.mapping_reviews import (
     apply_review,
     create_or_replace_review,
@@ -81,9 +104,12 @@ from ..services.mapping_reviews import (
     get_review,
     update_decisions,
 )
+from ..services.prompt_templates import render_for_story
 from ..services.prompts import validate_prompt_page_number
 
 router = APIRouter(prefix="/api/stories", tags=["故事拆解"])
+# 生图回传单独分组：Swagger / OpenAPI 里只出现在「生图回传」下
+ingest_router = APIRouter(prefix="/api/stories", tags=["生图回传"])
 
 
 def _get_story_or_404(db: Session, story_id: int) -> Story:
@@ -637,6 +663,26 @@ def _count_chinese_chars(text: str) -> int:
     return sum(1 for char in text if "一" <= char <= "鿿")
 
 
+def _cover_character_consistency(visual_content: str) -> str:
+    """从画面建议里的 {{角色名}} 生成封面角色一致性说明。"""
+    variables = list(
+        dict.fromkeys(re.findall(r"\{\{([^{}]+)\}\}", visual_content))
+    )
+    if not variables:
+        return ""
+    shown = "、".join("{{" + name + "}}" for name in variables)
+    parts = [
+        f"画面出现 {shown}；人物严格遵循各自角色设定与参考图。"
+    ]
+    for name in variables:
+        parts.append(
+            f"{{{{{name}}}}} 的外形以绑定的参考垫图为最高优先级，"
+            "本提示词中的外形文字仅补充垫图无法呈现的细节，二者冲突时以垫图为准；"
+        )
+    parts.append("保持角色卡中的发型、服装、配饰与体态，不换装、不漂移。")
+    return "".join(parts)
+
+
 @router.post(
     "/{story_id}/breakdown/chapters/{chapter_number}/cover/optimize",
     response_model=ChapterCoverOptimizeResult,
@@ -700,10 +746,10 @@ def optimize_chapter_cover(
 
     main_count = _count_chinese_chars(result.narration_main)
     sub_count = _count_chinese_chars(result.narration_sub)
-    if main_count >= 15:
+    if main_count > 12:
         raise AppError(
             502,
-            f"AI 返回的主标题为 {main_count} 字，超过 15 字，请换个建议重试",
+            f"AI 返回的主标题为 {main_count} 字，超过 12 字，请换个建议重试",
             "AI_COVER_TEXT_INVALID",
         )
     if sub_count >= 35:
@@ -740,6 +786,142 @@ def optimize_chapter_cover(
                 "AI_COVER_RESULT_INVALID",
             )
     return result
+
+
+@router.post(
+    "/{story_id}/breakdown/chapters/{chapter_number}/cover/copy-options",
+    response_model=CoverCopyOptionsResponse,
+)
+def generate_chapter_cover_copy_options(
+    story_id: int,
+    payload: CoverCopyOptionsRequest,
+    chapter_number: int = Path(ge=1, le=MAX_CHAPTERS),
+    db: Session = Depends(get_db),
+) -> CoverCopyOptionsResponse:
+    """从本章最强钩子生成 3 个封面文案方案，供用户选 1 个。"""
+    story = _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(
+            404,
+            "该故事还没有拆解结果，请先完成章节规划",
+            "BREAKDOWN_NOT_FOUND",
+        )
+    chapter = _get_chapter_or_404(breakdown, chapter_number)
+    chapters = sorted(
+        (breakdown.chapters or []),
+        key=lambda item: item.get("chapter_number", 0),
+    )
+    mapping_by_number = {
+        item.get("page_number"): item.get("source_text", "")
+        for item in (breakdown.mapping or [])
+    }
+    chapter_text = "\n".join(
+        mapping_by_number[number]
+        for number in chapter.get("mapping_page_numbers") or []
+        if number in mapping_by_number
+    ).strip()
+    if not chapter_text:
+        raise AppError(
+            422,
+            f"第 {chapter_number} 章没有可用的对照原文",
+            "CHAPTER_CONTENT_EMPTY",
+        )
+    previous = next(
+        (
+            item
+            for item in chapters
+            if item.get("chapter_number") == chapter_number - 1
+        ),
+        None,
+    )
+    following = next(
+        (
+            item
+            for item in chapters
+            if item.get("chapter_number") == chapter_number + 1
+        ),
+        None,
+    )
+    post_config = db.scalar(
+        select(StoryChapterPostConfig).where(
+            StoryChapterPostConfig.story_id == story_id,
+            StoryChapterPostConfig.chapter_number == chapter_number,
+        )
+    )
+    post_title = (
+        (post_config.title or "").strip() or None
+        if post_config is not None
+        else None
+    )
+    post_content = (post_config.content or "") if post_config is not None else ""
+    character_names = [
+        str(item.get("name") or "").strip()
+        for item in (breakdown.characters or [])
+        if str(item.get("name") or "").strip()
+    ]
+    cover = chapter.get("cover") or {}
+    chapter_title = payload.chapter_title or chapter.get("title", "")
+
+    api_key, _, _ = resolve_deepseek_key(db)
+    # AI 调用期间不持有数据库事务
+    db.rollback()
+    if api_key is None:
+        raise AppError(
+            409,
+            "尚未配置 DeepSeek API Key，请先到「设置」页面完成配置",
+            "DEEPSEEK_KEY_MISSING",
+        )
+
+    options = generate_cover_copy_options(
+        api_key,
+        story_name=story.name or "",
+        chapter_title=chapter_title,
+        chapter_text=chapter_text,
+        previous_chapter_title=(
+            previous.get("title") if previous is not None else None
+        ),
+        next_chapter_title=(
+            following.get("title") if following is not None else None
+        ),
+        character_names=character_names,
+        post_title=post_title,
+        post_content=post_content,
+        cover_label=payload.cover_label or cover.get("label", ""),
+        cover_main=payload.cover_main or cover.get("narration_main", ""),
+        cover_highlight=(
+            payload.cover_highlight or cover.get("narration_highlight", "")
+        ),
+        cover_sub=payload.cover_sub or cover.get("narration_sub", ""),
+        direction=payload.direction,
+    )
+    # 用户选定方案后要直接回填画面提示词；这里用封面模板统一渲染，
+    # 不让 DeepSeek 手写【画风】【文字区】【封面模式】等固定块。
+    cover_label = payload.cover_label or cover.get("label", "")
+    for option in options:
+        prompt, _, _ = render_for_story(
+            db,
+            template_type="cover",
+            story_id=story_id,
+            context={
+                "content": option.visual_content,
+                "character_consistency": _cover_character_consistency(
+                    option.visual_content
+                ),
+                "label": cover_label,
+                "narration_main": option.narration_main,
+                "narration_sub": option.narration_sub,
+                "narration_highlight": option.narration_highlight,
+                "chapter_number": chapter_number,
+            },
+        )
+        option.image_prompt = prompt
+    return CoverCopyOptionsResponse(
+        story_id=story_id,
+        chapter_number=chapter_number,
+        post_title=post_title,
+        options=options,
+    )
 
 
 @router.post(
@@ -995,6 +1177,54 @@ def upsert_page(
     return read
 
 
+def _read_ingested_image(payload: ImageIngestPayload) -> tuple[bytes, str | None]:
+    """把外部接口回传的 URL 或 base64 读成图片字节。"""
+    if payload.image_base64:
+        raw = payload.image_base64.strip()
+        if raw.startswith("data:"):
+            _, _, raw = raw.partition(",")
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise AppError(
+                422, "base64 图片解码失败", "INVALID_IMAGE_BASE64"
+            ) from exc
+    else:
+        url = (payload.image_url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            raise AppError(
+                422, "image_url 必须是 http/https 地址", "INVALID_IMAGE_URL"
+            )
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    buffer = bytearray()
+                    for chunk in response.iter_bytes():
+                        buffer.extend(chunk)
+                        if len(buffer) > MAX_PAGE_IMAGE_BYTES:
+                            raise AppError(
+                                413,
+                                f"图片大小不能超过 "
+                                f"{MAX_PAGE_IMAGE_BYTES // (1024 * 1024)}MB",
+                                "FILE_TOO_LARGE",
+                            )
+                    data = bytes(buffer)
+        except httpx.HTTPError as exc:
+            raise AppError(
+                422, f"下载回传图片失败：{exc}", "IMAGE_DOWNLOAD_FAILED"
+            ) from exc
+    if not data:
+        raise AppError(422, "回传图片为空", "EMPTY_FILE")
+    if len(data) > MAX_PAGE_IMAGE_BYTES:
+        raise AppError(
+            413,
+            f"图片大小不能超过 {MAX_PAGE_IMAGE_BYTES // (1024 * 1024)}MB",
+            "FILE_TOO_LARGE",
+        )
+    return data, payload.filename
+
+
 @router.post(
     "/{story_id}/breakdown/pages/{page_number}/image",
     response_model=StoryboardPageRead,
@@ -1038,6 +1268,291 @@ def upload_page_image(
     )
     read.image_url = page_image_url(upload_dir, story_id, page_number)
     return read
+
+
+@ingest_router.post(
+    "/{story_id}/breakdown/pages/images/ingest",
+    response_model=ImageBatchIngestResponse,
+    summary="批量回传正文页成品图",
+    description=(
+        "一次回传多张正文页成品图，每项支持 image_url 或 image_base64。"
+        "page_number 是全局页码；一次最多 20 张，页码不能重复。"
+        "逐项处理并返回每页结果：某项失败不会回滚其他项，"
+        "调用方可只重试 items 里 ok=false 的页面。"
+    ),
+    responses={
+        404: {"description": "故事或拆解结果不存在"},
+        413: {"description": "单张图片超过 15MB"},
+        422: {"description": "参数不合法、页码重复或超过 20 张"},
+    },
+)
+def ingest_page_images_batch(
+    story_id: int,
+    request: Request,
+    payload: ImageBatchIngestRequest,
+    db: Session = Depends(get_db),
+) -> ImageBatchIngestResponse:
+    """批量回传正文页成品图，逐项返回成功或失败。"""
+    _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+
+    pages = {
+        item.get("page_number"): item for item in (breakdown.pages or [])
+    }
+    upload_dir = request.app.state.app_settings.upload_dir
+    results: list[ImageBatchIngestItemResult] = []
+
+    for item in payload.items:
+        page = pages.get(item.page_number)
+        if page is None:
+            results.append(
+                ImageBatchIngestItemResult(
+                    page_number=item.page_number,
+                    ok=False,
+                    error=f"第 {item.page_number} 页不存在",
+                    code="PAGE_NOT_FOUND",
+                )
+            )
+            continue
+        try:
+            data, filename = _read_ingested_image(item)
+            chapter_number = page_chapter_number(
+                page, breakdown.chapters or []
+            )
+            save_page_image_bytes(
+                data,
+                upload_dir,
+                story_id,
+                item.page_number,
+                chapter_number,
+                filename=filename,
+            )
+            results.append(
+                ImageBatchIngestItemResult(
+                    page_number=item.page_number,
+                    ok=True,
+                    image_url=page_image_url(
+                        upload_dir, story_id, item.page_number
+                    ),
+                )
+            )
+        except AppError as exc:
+            results.append(
+                ImageBatchIngestItemResult(
+                    page_number=item.page_number,
+                    ok=False,
+                    error=exc.message,
+                    code=exc.code,
+                )
+            )
+
+    succeeded = sum(1 for result in results if result.ok)
+    return ImageBatchIngestResponse(
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        items=results,
+    )
+
+
+@ingest_router.post(
+    "/{story_id}/breakdown/pages/{page_number}/image/ingest",
+    response_model=StoryboardPageRead,
+    summary="回传正文页成品图",
+    description=(
+        "生图 AI 生成后直接回传，支持 image_url 或 image_base64。"
+        "page_number 是全局页码，不是章内页码。"
+        "同页重复回传会覆盖旧图，成功后返回该页的 image_url。"
+    ),
+    responses={
+        404: {"description": "故事或该页不存在"},
+        413: {"description": "图片超过 15MB"},
+        422: {"description": "参数、URL 或图片格式不合法"},
+    },
+)
+def ingest_page_image(
+    story_id: int,
+    request: Request,
+    payload: ImageIngestPayload,
+    page_number: int = Path(ge=1, le=MAX_BREAKDOWN_PAGES),
+    db: Session = Depends(get_db),
+) -> StoryboardPageRead:
+    """生图 AI 直接回传成品图：接受图片 URL 或 base64，写入同一页。
+
+    与 multipart 上传等价，同页重复回传覆盖旧图。
+    """
+    _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+    page = next(
+        (
+            item
+            for item in breakdown.pages
+            if item.get("page_number") == page_number
+        ),
+        None,
+    )
+    if page is None:
+        raise AppError(404, f"第 {page_number} 页不存在", "PAGE_NOT_FOUND")
+
+    data, filename = _read_ingested_image(payload)
+    upload_dir = request.app.state.app_settings.upload_dir
+    chapter_number = page_chapter_number(page, breakdown.chapters or [])
+    save_page_image_bytes(
+        data,
+        upload_dir,
+        story_id,
+        page_number,
+        chapter_number,
+        filename=filename,
+    )
+    read = StoryboardPageRead.model_validate(page)
+    read.display_page_number = (
+        read.chapter_page_number or read.page_number
+    )
+    read.image_url = page_image_url(upload_dir, story_id, page_number)
+    return read
+
+
+@ingest_router.post(
+    "/{story_id}/breakdown/characters/asset-images/ingest",
+    response_model=CharacterAssetBatchIngestResponse,
+    summary="批量回传角色资产图",
+    description=(
+        "一次回传多张角色资产图，每项支持 image_url 或 image_base64。"
+        "character_index 是 characters 数组下标；一次最多 20 张，下标不能重复。"
+        "逐项处理并返回每个角色的结果：某项失败不会回滚其他项。"
+    ),
+    responses={
+        404: {"description": "故事或拆解结果不存在"},
+        413: {"description": "单张图片超过 15MB"},
+        422: {"description": "参数不合法、下标重复或超过 20 张"},
+    },
+)
+def ingest_character_assets_batch(
+    story_id: int,
+    request: Request,
+    payload: CharacterAssetBatchIngestRequest,
+    db: Session = Depends(get_db),
+) -> CharacterAssetBatchIngestResponse:
+    """批量回传角色资产图，逐项返回成功或失败。"""
+    _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+
+    upload_dir = request.app.state.app_settings.upload_dir
+    characters = list(breakdown.characters or [])
+    results: list[CharacterAssetBatchIngestItemResult] = []
+    changed = False
+
+    for item in payload.items:
+        index = item.character_index
+        if index >= len(characters):
+            results.append(
+                CharacterAssetBatchIngestItemResult(
+                    character_index=index,
+                    ok=False,
+                    error=f"角色索引 {index} 不存在",
+                    code="CHARACTER_NOT_FOUND",
+                )
+            )
+            continue
+        try:
+            data, _filename = _read_ingested_image(item)
+            card = dict(characters[index])
+            card["asset_filename"] = save_character_asset_bytes(
+                data, upload_dir, story_id, card.get("asset_filename")
+            )
+            characters[index] = card
+            changed = True
+            results.append(
+                CharacterAssetBatchIngestItemResult(
+                    character_index=index,
+                    name=card.get("name"),
+                    ok=True,
+                    asset_url=character_asset_url(
+                        upload_dir, story_id, card.get("asset_filename")
+                    ),
+                )
+            )
+        except AppError as exc:
+            results.append(
+                CharacterAssetBatchIngestItemResult(
+                    character_index=index,
+                    name=characters[index].get("name"),
+                    ok=False,
+                    error=exc.message,
+                    code=exc.code,
+                )
+            )
+
+    if changed:
+        breakdown.characters = characters
+        db.commit()
+
+    succeeded = sum(1 for result in results if result.ok)
+    return CharacterAssetBatchIngestResponse(
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        items=results,
+    )
+
+
+@ingest_router.post(
+    "/{story_id}/breakdown/characters/{character_index}/asset-image/ingest",
+    response_model=CharacterCardRead,
+    summary="回传角色资产图",
+    description=(
+        "生图 AI 生成角色设定图后直接回传，支持 image_url 或 image_base64。"
+        "character_index 是 characters 数组下标，从 0 开始。"
+        "重复回传会覆盖旧图并删除旧文件，只更新目标角色的 asset_filename。"
+    ),
+    responses={
+        404: {"description": "故事、拆解结果或角色卡不存在"},
+        413: {"description": "图片超过 15MB"},
+        422: {"description": "URL、base64 或图片格式不合法"},
+    },
+)
+def ingest_character_asset(
+    story_id: int,
+    request: Request,
+    payload: ImageIngestPayload,
+    character_index: int = Path(..., ge=0),
+    db: Session = Depends(get_db),
+) -> CharacterCardRead:
+    """外部生图 AI 直接回传角色资产图：URL 或 base64，二选一。"""
+    _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+    if character_index >= len(breakdown.characters or []):
+        raise AppError(404, "角色卡不存在", "CHARACTER_NOT_FOUND")
+
+    data, _filename = _read_ingested_image(payload)
+    upload_dir = request.app.state.app_settings.upload_dir
+    characters = list(breakdown.characters or [])
+    card = dict(characters[character_index])
+    card["asset_filename"] = save_character_asset_bytes(
+        data, upload_dir, story_id, card.get("asset_filename")
+    )
+    characters[character_index] = card
+    breakdown.characters = characters
+    db.commit()
+    db.refresh(breakdown)
+    return CharacterCardRead(
+        name=card["name"],
+        role=card.get("role", ""),
+        appearance=card["appearance"],
+        asset_filename=card.get("asset_filename"),
+        asset_url=character_asset_url(
+            upload_dir, story_id, card.get("asset_filename")
+        ),
+    )
 
 
 @router.delete(
@@ -1109,6 +1624,61 @@ def clear_pages(
     return Response(status_code=204)
 
 
+@router.get(
+    "/{story_id}/breakdown/chapters/{chapter_number}/assets/{kind}/archives",
+    response_model=list[ChapterAssetArchiveRead],
+)
+def list_chapter_asset_history(
+    story_id: int,
+    request: Request,
+    chapter_number: int = Path(ge=1, le=MAX_CHAPTERS),
+    kind: str = "cover",
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    if kind not in ("cover", "guide"):
+        raise AppError(422, "不支持的章节图片类型", "INVALID_CHAPTER_ASSET_KIND")
+    story = _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+    _get_chapter_or_404(breakdown, chapter_number)
+    return list_chapter_asset_archives(
+        request.app.state.app_settings.upload_dir,
+        story_id,
+        chapter_number,
+        kind,
+    )
+
+
+@router.post(
+    "/{story_id}/breakdown/chapters/{chapter_number}/assets/{kind}/archives/{filename}/restore",
+    response_model=ChapterAssetArchiveRestoreResult,
+)
+def restore_chapter_asset_history(
+    story_id: int,
+    request: Request,
+    chapter_number: int = Path(ge=1, le=MAX_CHAPTERS),
+    kind: str = "cover",
+    filename: str = "",
+    db: Session = Depends(get_db),
+) -> dict:
+    if kind not in ("cover", "guide"):
+        raise AppError(422, "不支持的章节图片类型", "INVALID_CHAPTER_ASSET_KIND")
+    _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+    _get_chapter_or_404(breakdown, chapter_number)
+    url = restore_chapter_asset_archive(
+        request.app.state.app_settings.upload_dir,
+        story_id,
+        chapter_number,
+        kind,
+        filename,
+    )
+    return {"url": url}
+
+
 @router.post(
     "/{story_id}/breakdown/chapters/{chapter_number}/cover/image",
     response_model=StoryBreakdownRead,
@@ -1129,6 +1699,49 @@ def upload_chapter_cover(
 
     upload_dir = request.app.state.app_settings.upload_dir
     save_chapter_asset(file, upload_dir, story_id, chapter_number, "cover")
+    return _to_breakdown_read(
+        breakdown, story, _resolve_story_style(db, story), upload_dir
+    )
+
+
+@ingest_router.post(
+    "/{story_id}/breakdown/chapters/{chapter_number}/cover/image/ingest",
+    response_model=StoryBreakdownRead,
+    summary="回传章节封面图",
+    description=(
+        "生图 AI 生成后直接回传章节封面，支持 image_url 或 image_base64。"
+        "chapter_number 从 1 开始，同章重复回传会覆盖旧图。"
+    ),
+    responses={
+        404: {"description": "故事或章节不存在"},
+        413: {"description": "图片超过 15MB"},
+        422: {"description": "参数、URL 或图片格式不合法"},
+    },
+)
+def ingest_chapter_cover(
+    story_id: int,
+    request: Request,
+    payload: ImageIngestPayload,
+    chapter_number: int = Path(ge=1, le=MAX_CHAPTERS),
+    db: Session = Depends(get_db),
+) -> StoryBreakdownRead:
+    """生图 AI 直接回传章节封面图（URL 或 base64）。"""
+    story = _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+    _get_chapter_or_404(breakdown, chapter_number)
+
+    data, filename = _read_ingested_image(payload)
+    upload_dir = request.app.state.app_settings.upload_dir
+    save_chapter_asset_bytes(
+        data,
+        upload_dir,
+        story_id,
+        chapter_number,
+        "cover",
+        filename=filename,
+    )
     return _to_breakdown_read(
         breakdown, story, _resolve_story_style(db, story), upload_dir
     )
@@ -1179,6 +1792,49 @@ def upload_chapter_guide(
 
     upload_dir = request.app.state.app_settings.upload_dir
     save_chapter_asset(file, upload_dir, story_id, chapter_number, "guide")
+    return _to_breakdown_read(
+        breakdown, story, _resolve_story_style(db, story), upload_dir
+    )
+
+
+@ingest_router.post(
+    "/{story_id}/breakdown/chapters/{chapter_number}/guide/image/ingest",
+    response_model=StoryBreakdownRead,
+    summary="回传章节引导卡图",
+    description=(
+        "生图 AI 生成后直接回传章节引导卡，支持 image_url 或 image_base64。"
+        "chapter_number 从 1 开始，同章重复回传会覆盖旧图。"
+    ),
+    responses={
+        404: {"description": "故事或章节不存在"},
+        413: {"description": "图片超过 15MB"},
+        422: {"description": "参数、URL 或图片格式不合法"},
+    },
+)
+def ingest_chapter_guide(
+    story_id: int,
+    request: Request,
+    payload: ImageIngestPayload,
+    chapter_number: int = Path(ge=1, le=MAX_CHAPTERS),
+    db: Session = Depends(get_db),
+) -> StoryBreakdownRead:
+    """生图 AI 直接回传章节引导卡图（URL 或 base64）。"""
+    story = _get_story_or_404(db, story_id)
+    breakdown = _get_breakdown(db, story_id)
+    if breakdown is None:
+        raise AppError(404, "该故事还没有拆解结果", "BREAKDOWN_NOT_FOUND")
+    _get_chapter_or_404(breakdown, chapter_number)
+
+    data, filename = _read_ingested_image(payload)
+    upload_dir = request.app.state.app_settings.upload_dir
+    save_chapter_asset_bytes(
+        data,
+        upload_dir,
+        story_id,
+        chapter_number,
+        "guide",
+        filename=filename,
+    )
     return _to_breakdown_read(
         breakdown, story, _resolve_story_style(db, story), upload_dir
     )
@@ -1414,4 +2070,5 @@ def delete_breakdown(
     delete_story_chapter_assets(upload_dir, story_id)
     delete_story_character_assets(upload_dir, story_id)
     delete_group_photo(upload_dir, story_id)
+    delete_story_history(upload_dir, story_id)
     return Response(status_code=204)

@@ -72,6 +72,10 @@ def apply_schema_migrations(engine: Engine) -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE stories ADD COLUMN zhihu_aliases JSON"
             )
+        if columns and "sensitive_edit" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN sensitive_edit JSON"
+            )
 
         # AI 改动解读的持久化缓存（原文 / 优化文未变时不再调用模型）
         breakdown_columns = {
@@ -100,6 +104,56 @@ def apply_schema_migrations(engine: Engine) -> None:
         if breakdown_columns and "chapters" not in breakdown_columns:
             connection.exec_driver_sql(
                 "ALTER TABLE story_breakdowns ADD COLUMN chapters JSON"
+            )
+
+        # 设计建议升级为通用规则：渲染提示词时自动追加【设计规则】
+        feedback_columns = {
+            row[1]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(design_feedbacks)"
+            )
+        }
+        if feedback_columns and "is_rule" not in feedback_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE design_feedbacks ADD COLUMN is_rule "
+                "BOOLEAN NOT NULL DEFAULT 0"
+            )
+        if feedback_columns and "rule_text" not in feedback_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE design_feedbacks ADD COLUMN rule_text "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        if feedback_columns and "rule_target" not in feedback_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE design_feedbacks ADD COLUMN rule_target "
+                "VARCHAR(20) NOT NULL DEFAULT 'cover'"
+            )
+        if feedback_columns and "rule_promoted_at" not in feedback_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE design_feedbacks ADD COLUMN rule_promoted_at DATETIME"
+            )
+
+        rule_columns = {
+            row[1]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(design_rules)"
+            )
+        }
+        if rule_columns and "template_applied_at" not in rule_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE design_rules ADD COLUMN template_applied_at DATETIME"
+            )
+
+        # 提示词快照增加规则硬检查结果
+        snapshot_columns = {
+            row[1]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(prompt_render_snapshots)"
+            )
+        }
+        if snapshot_columns and "rule_checks" not in snapshot_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE prompt_render_snapshots ADD COLUMN rule_checks JSON"
             )
 
 

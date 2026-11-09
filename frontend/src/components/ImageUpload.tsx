@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ClipboardEvent } from 'react'
-import { App, Button, Image, Modal, Space, Typography, Upload } from 'antd'
+import { Alert, App, Button, Image, Modal, Space, Typography, Upload } from 'antd'
 import {
   DeleteOutlined,
   LoadingOutlined,
@@ -40,7 +40,8 @@ interface ImageUploadProps {
  *
  * 交互：点击占位图/按钮弹出上传弹窗，弹窗内可「选择本地文件」，
  * 也可以点击粘贴区后直接 Ctrl+V 粘贴剪贴板截图（浏览器要求先聚焦才能接收粘贴事件）。
- * 上传成功后弹窗自动关闭。
+ * 上传成功后弹窗保持打开，展示刚上传的图片；点击遮罩或关闭按钮即可关闭。
+ * 所有上传入口共用这一行为，不提供逐处开关（见 C-11）。
  */
 export default function ImageUpload({
   imageUrl,
@@ -56,15 +57,43 @@ export default function ImageUpload({
   const { message } = App.useApp()
   const [uploading, setUploading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
+  const [uploaded, setUploaded] = useState(false)
+  const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(
+    null,
+  )
+  const uploadedPreviewRef = useRef<string | null>(null)
   // 粘贴区引用：弹窗打开后自动聚焦，用户无需再点击即可直接 Ctrl+V
   const pasteZoneRef = useRef<HTMLDivElement>(null)
+
+  const clearUploadedPreview = () => {
+    if (uploadedPreviewRef.current) {
+      URL.revokeObjectURL(uploadedPreviewRef.current)
+      uploadedPreviewRef.current = null
+    }
+    setUploadedPreviewUrl(null)
+  }
+
+  const closeModal = () => {
+    setModalOpen(false)
+    setUploaded(false)
+    clearUploadedPreview()
+  }
+
+  useEffect(
+    () => () => {
+      if (uploadedPreviewRef.current) {
+        URL.revokeObjectURL(uploadedPreviewRef.current)
+      }
+    },
+    [],
+  )
 
   const setUploadingState = (next: boolean) => {
     setUploading(next)
     onUploadingChange?.(next)
   }
 
-  /** 校验并上传；成功后关闭弹窗。错误提示与成功提示由调用方/本组件统一处理。 */
+  /** 校验并上传；成功后保持弹窗打开，展示本次上传结果。 */
   const doUpload = async (file: File) => {
     if (!ALLOWED_TYPES.includes(file.type)) {
       message.error('仅支持 JPG、PNG、WebP 格式的图片')
@@ -77,10 +106,15 @@ export default function ImageUpload({
       return
     }
 
+    setUploaded(false)
     setUploadingState(true)
     try {
       await onUpload(file)
-      setModalOpen(false)
+      setUploaded(true)
+      clearUploadedPreview()
+      const previewUrl = URL.createObjectURL(file)
+      uploadedPreviewRef.current = previewUrl
+      setUploadedPreviewUrl(previewUrl)
     } catch {
       // 错误提示由调用方负责，这里只复位状态
     } finally {
@@ -101,23 +135,47 @@ export default function ImageUpload({
 
   const openModal = () => {
     if (disabled || uploading) return
+    setUploaded(false)
+    clearUploadedPreview()
     setModalOpen(true)
   }
+
+  const previewSrc = uploadedPreviewUrl
 
   const uploadModal = (
     <Modal
       open={modalOpen}
-      title={imageUrl ? replaceText : uploadText}
+      title={uploaded ? '确认上传的图片' : imageUrl ? replaceText : uploadText}
       footer={null}
       maskClosable={!uploading}
-      onCancel={() => setModalOpen(false)}
+      keyboard={!uploading}
+      onCancel={() => {
+        if (!uploading) closeModal()
+      }}
       afterOpenChange={(open) => {
         // 打开动画结束后再把焦点交给粘贴区，否则会被弹窗自身的焦点管理覆盖
         if (open) pasteZoneRef.current?.focus()
       }}
-      width={420}
+      width={520}
+      styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
     >
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        {uploaded && (
+          <Alert
+            type="success"
+            showIcon
+            message="上传成功，请确认图片是否正确"
+            description="确认无误后点击遮罩即可关闭；如果图片不对，可在本弹窗内重新选择或粘贴。"
+          />
+        )}
+        {previewSrc ? (
+          <Image
+            src={previewSrc}
+            alt="待确认图片"
+            className="image-upload-confirm-preview"
+            style={{ width: '100%', maxHeight: 360, objectFit: 'contain' }}
+          />
+        ) : null}
         {/* 粘贴区：tabIndex 让其可点击聚焦，聚焦后浏览器才会派发粘贴事件 */}
         <div
           ref={pasteZoneRef}

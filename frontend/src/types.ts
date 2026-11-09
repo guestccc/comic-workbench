@@ -18,6 +18,31 @@ export interface ArtStylesPayload {
   active_id: string | null
 }
 
+export interface ImageProviderStatus {
+  configured: boolean
+  source: 'env' | 'db' | 'none'
+  masked_key: string | null
+  base_url: string
+  model: string
+  size: string
+  quality: string
+  db_configured: boolean
+}
+
+export interface ImageProviderPayload {
+  base_url: string
+  model: string
+  size: string
+  quality: 'auto' | 'low' | 'medium' | 'high'
+  api_key?: string
+}
+
+export interface ImageProviderTestResult {
+  ok: boolean
+  models: string[]
+  message: string
+}
+
 export interface SettingsData {
   prompt: string
   is_default: boolean
@@ -27,6 +52,162 @@ export interface SettingsData {
   active_art_style: string | null
   /** 全局生图前置提示词：复制角色卡与分镜提示词时自动拼在开头 */
   image_prefix_prompt: string
+  image_provider: ImageProviderStatus
+}
+
+export type ImageGenerationTarget =
+  | 'character_asset'
+  | 'chapter_cover'
+  | 'chapter_guide'
+  | 'page'
+
+export interface ImageGenerationPreview {
+  generation_id: string
+  target_type: ImageGenerationTarget
+  old_url: string | null
+  new_url: string
+  model: string
+  size: string
+  elapsed_ms: number
+}
+
+export interface ImageGenerationItem {
+  id: string
+  target_type: ImageGenerationTarget
+  url: string
+  created_at: string
+  model: string
+  size: string
+  file_bytes: number
+  used_at: string | null
+  is_current: boolean
+  /** 本次实际发给上游生图 API 的完整提示词 */
+  prompt: string
+  /** 本次使用的角色参考图名称 */
+  reference_names: string[]
+}
+
+export interface ImageGenerationList {
+  items: ImageGenerationItem[]
+  total_bytes: number
+}
+
+export type AliasStampTarget = 'page' | 'cover' | 'guide'
+
+export interface AliasStampItem {
+  target: AliasStampTarget
+  chapter_number: number | null
+  page_number: number | null
+  ok: boolean
+  error: string | null
+}
+
+export interface AliasStampResult {
+  alias: string
+  stamped: number
+  failed: number
+  items: AliasStampItem[]
+  backup_dir: string
+}
+
+export interface AliasRestoreResult {
+  restored: number
+  failed: number
+  items: AliasStampItem[]
+}
+
+export interface ImageGenerationClearResult {
+  deleted: number
+  freed_bytes: number
+}
+
+export interface PromptTemplatesData {
+  body: string
+  cover: string
+  body_default: string
+  cover_default: string
+  body_is_default: boolean
+  cover_is_default: boolean
+  placeholders: string[]
+}
+
+export interface PromptTemplatesPayload {
+  body: string
+  cover: string
+}
+
+export interface PromptTemplateVersion {
+  id: number
+  template_type: 'body' | 'cover'
+  content: string
+  note: string
+  created_at: string
+}
+
+export interface PromptRenderPayload {
+  template_type: 'body' | 'cover'
+  story_id: number
+  preview?: boolean
+  context: {
+    content: string
+    character_consistency: string
+    narration_main: string
+    narration_sub: string
+    narration_highlight: string
+    dialogues: string[]
+    page_number?: number | null
+    chapter_number?: number | null
+    label?: string
+  }
+}
+
+export interface AppliedDesignRule {
+  id: number
+  title: string
+  kind: DesignRuleKind
+  target: DesignRuleTarget
+  scope_type: DesignRuleScopeType
+  priority: DesignRulePriority
+  requirement: string
+  negative_terms: string[]
+  review_check: string
+}
+
+export interface RuleCheckResult {
+  rule_id: number
+  title: string
+  passed: boolean
+  message: string
+}
+
+export interface PromptRenderResult {
+  prompt: string
+  template_type: 'body' | 'cover'
+  story_id: number
+  applied_rules: AppliedDesignRule[]
+  rule_checks: RuleCheckResult[]
+  snapshot_id: number | null
+}
+
+export interface PromptSnapshot {
+  id: number
+  story_id: number
+  target_type: 'cover' | 'body'
+  chapter_number: number | null
+  page_number: number | null
+  template_type: 'body' | 'cover'
+  prompt: string
+  applied_rules: AppliedDesignRule[]
+  rule_checks: RuleCheckResult[]
+  restored_from_id: number | null
+  created_at: string
+}
+
+export interface PromptSnapshotRestoreResult {
+  snapshot: PromptSnapshot
+  target_type: 'cover' | 'body'
+  chapter_number: number | null
+  page_number: number | null
 }
 
 export type PromptOptimizeRole = 'user' | 'assistant'
@@ -71,6 +252,38 @@ export interface ChapterCoverOptimizeResult {
   image_prompt: string
 }
 
+/** 生成封面文案方案的请求；可带当前未保存的封面文字与用户方向。 */
+export interface CoverCopyOptionsPayload {
+  chapter_title: string
+  cover_label: string
+  cover_main: string
+  cover_highlight: string
+  cover_sub: string
+  direction?: string
+}
+
+/** 单个封面文案方案：主标题、标红词、副标题与画面建议。 */
+export interface CoverCopyOption {
+  style: string
+  feature: string
+  hook_source: string
+  visual_hint: string
+  visual_content: string
+  narration_main: string
+  narration_highlight: string
+  narration_sub: string
+  recommended: boolean
+  recommend_reason: string
+  image_prompt: string
+}
+
+export interface CoverCopyOptionsResponse {
+  story_id: number
+  chapter_number: number
+  post_title: string | null
+  options: CoverCopyOption[]
+}
+
 /** 从生图平台同步回来的单个角色：名字用于匹配，外形整体覆盖。 */
 export interface CharacterSyncItem {
   name: string
@@ -89,6 +302,52 @@ export interface CharacterSyncResult {
   review_warning: string | null
 }
 
+export interface SensitiveWord {
+  word: string
+  replacement: string
+  category: string
+  enabled: boolean
+}
+
+export interface SensitiveWordMatch {
+  word: string
+  replacement: string
+  category: string
+  start: number
+  end: number
+}
+
+export interface SensitiveScanResult {
+  matches: SensitiveWordMatch[]
+  total: number
+  counts: Record<string, number>
+  dictionary_version: string
+}
+
+export interface SensitiveApplyItem {
+  word: string
+  replacement: string
+}
+
+export interface SensitiveAppliedItem extends SensitiveApplyItem {
+  count: number
+}
+
+export interface SensitiveEdit {
+  original_content: string
+  result_content: string
+  items: SensitiveAppliedItem[]
+  applied_at: string
+  dictionary_version: string
+}
+
+export interface SensitiveApplyResult {
+  content: string
+  items: SensitiveAppliedItem[]
+  dictionary_version: string
+  sensitive_edit: SensitiveEdit
+}
+
 export interface Story {
   id: number
   name: string
@@ -105,6 +364,8 @@ export interface Story {
   zhihu_alias: string
   /** 候选别名；zhihu_alias 是最终使用并写进正文的那一个 */
   zhihu_aliases: string[]
+  /** 敏感词替换审计；没有执行过时为空 */
+  sensitive_edit?: SensitiveEdit | null
   created_at: string
   updated_at: string
 }
@@ -206,6 +467,13 @@ export interface ChapterCover {
   narration_highlight: string
   narration_sub: string
   image_prompt: string
+}
+
+export interface ChapterAssetArchive {
+  filename: string
+  url: string
+  bytes: number
+  created_at: string
 }
 
 export interface ChapterCoverRead extends ChapterCover {
@@ -405,4 +673,289 @@ export interface GeneratedCopy {
   story_id: number
   chapter_number?: number | null
   options: GeneratedCopyOption[]
+}
+
+export type DesignFeedbackSource = 'xiaohongshu' | 'manual'
+export type DesignFeedbackCategory =
+  | 'cover'
+  | 'comic'
+  | 'title'
+  | 'color'
+  | 'expression'
+  | 'text'
+  | 'pacing'
+  | 'other'
+export type DesignFeedbackScope = 'global' | 'story' | 'chapter'
+export type DesignFeedbackPriority = 'low' | 'medium' | 'high'
+export type DesignFeedbackStatus = 'open' | 'applied' | 'verified' | 'archived'
+export type DesignFeedbackRuleTarget = 'cover' | 'comic' | 'all'
+export type DesignFeedbackTargetType =
+  | 'cover'
+  | 'page'
+  | 'guide'
+  | 'character'
+  | 'other'
+
+/** 一次建议应用：记录目标与改前 / 改后快照。 */
+export interface DesignFeedbackApplication {
+  id: number
+  feedback_id: number
+  target_type: DesignFeedbackTargetType
+  story_id: number
+  story_name: string | null
+  chapter_number: number | null
+  page_number: number | null
+  summary: string
+  before_prompt: string | null
+  after_prompt: string | null
+  before_image_url: string | null
+  after_image_url: string | null
+  applied_at: string
+}
+
+/** 小红书 / 手动设计建议；详情额外带应用记录。 */
+export interface DesignFeedback {
+  id: number
+  title: string
+  content: string
+  source: DesignFeedbackSource
+  source_url: string
+  screenshot_filename: string | null
+  screenshot_url: string | null
+  category: DesignFeedbackCategory
+  scope: DesignFeedbackScope
+  story_id: number | null
+  story_name: string | null
+  chapter_number: number | null
+  tags: string[]
+  priority: DesignFeedbackPriority
+  status: DesignFeedbackStatus
+  application_count: number
+  is_rule: boolean
+  rule_text: string
+  rule_target: DesignFeedbackRuleTarget
+  rule_promoted_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DesignFeedbackDetail extends DesignFeedback {
+  applications: DesignFeedbackApplication[]
+}
+
+export interface DesignFeedbackPayload {
+  title: string
+  content: string
+  source: DesignFeedbackSource
+  source_url: string
+  screenshot_filename: string | null
+  category: DesignFeedbackCategory
+  scope: DesignFeedbackScope
+  story_id: number | null
+  chapter_number: number | null
+  tags: string[]
+  priority: DesignFeedbackPriority
+}
+
+export interface DesignFeedbackUpdatePayload
+  extends Partial<DesignFeedbackPayload> {
+  status?: DesignFeedbackStatus
+}
+
+export interface DesignFeedbackRulePromotePayload {
+  rule_text: string
+  rule_target: DesignFeedbackRuleTarget
+}
+
+export type DesignRuleKind = 'prompt' | 'negative' | 'text' | 'review' | 'check'
+export type DesignRuleTarget = 'cover' | 'body' | 'guide' | 'all'
+export type DesignRuleSlot = 'scene' | 'cover_mode' | 'text_zone' | 'none'
+export type DesignRuleScopeType = 'global' | 'story' | 'chapter' | 'pages'
+export type DesignRulePriority = 'hard' | 'soft'
+export type DesignRuleStatus = 'draft' | 'active' | 'disabled'
+export type DesignRuleCreatedBy = 'claude' | 'user'
+
+export interface DesignRule {
+  id: number
+  feedback_id: number
+  feedback_title: string | null
+  title: string
+  kind: DesignRuleKind
+  target: DesignRuleTarget
+  slot: DesignRuleSlot
+  scope_type: DesignRuleScopeType
+  story_id: number | null
+  story_name: string | null
+  chapter_numbers: number[]
+  page_numbers: number[]
+  priority: DesignRulePriority
+  requirement: string
+  negative_terms: string[]
+  review_check: string
+  check_spec: Record<string, unknown>
+  status: DesignRuleStatus
+  version: number
+  created_by: DesignRuleCreatedBy
+  check_count: number
+  passed_count: number
+  failed_count: number
+  latest_result: string | null
+  template_applied_at: string | null
+  coverage_run_id: number | null
+  coverage_status: string | null
+  coverage_total: number
+  coverage_pending: number
+  coverage_updated_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DesignRulePayload {
+  title: string
+  kind: DesignRuleKind
+  target: DesignRuleTarget
+  slot: DesignRuleSlot
+  scope_type: DesignRuleScopeType
+  story_id: number | null
+  chapter_numbers: number[]
+  page_numbers: number[]
+  priority: DesignRulePriority
+  requirement: string
+  negative_terms: string[]
+  review_check: string
+  check_spec: Record<string, unknown>
+  created_by?: DesignRuleCreatedBy
+}
+
+export interface DesignRuleUpdatePayload
+  extends Partial<DesignRulePayload> {}
+
+export interface DesignRuleResult {
+  id: number
+  rule_id: number
+  story_id: number
+  target_type: 'cover' | 'body' | 'guide' | 'other'
+  chapter_number: number | null
+  page_number: number | null
+  result: 'passed' | 'failed' | 'unknown'
+  message: string
+  image_url: string | null
+  snapshot_id: number | null
+  reviewer: 'claude' | 'user'
+  created_at: string
+}
+
+export interface DesignRuleOnceTarget {
+  target_type: 'cover' | 'body'
+  story_id: number
+  chapter_number: number
+  page_number?: number | null
+}
+
+export interface DesignRuleOncePreview {
+  target_type: 'cover' | 'body'
+  story_id: number
+  chapter_number: number
+  page_number: number | null
+  before: string
+  after: string
+  inserted_block: string
+}
+
+export interface DesignRuleOnceApplyResult {
+  rule: DesignRule
+  target_type: 'cover' | 'body'
+  story_id: number
+  chapter_number: number
+  page_number: number | null
+  prompt: string
+}
+
+export interface DesignRuleTemplatePreviewItem {
+  template_type: 'body' | 'cover'
+  before: string
+  after: string
+  inserted_block: string
+}
+
+export interface DesignRuleTemplatePreview {
+  items: DesignRuleTemplatePreviewItem[]
+}
+
+export interface DesignRuleTemplateApplyResult {
+  templates: PromptTemplatesData
+  rule: DesignRule
+  applied_template_types: ('body' | 'cover')[]
+}
+
+export interface DesignRulePreviewPayload {
+  target: DesignRuleTarget
+  scope_type: DesignRuleScopeType
+  story_id?: number | null
+  chapter_numbers: number[]
+  page_numbers: number[]
+}
+
+export interface DesignRulePreviewResult {
+  cover: number
+  body: number
+  guide: number
+  total: number
+  samples: string[]
+}
+
+export interface DesignFeedbackApplicationPayload {
+  target_type: DesignFeedbackTargetType
+  story_id: number
+  chapter_number?: number | null
+  page_number?: number | null
+  summary: string
+  before_prompt?: string | null
+  after_prompt?: string | null
+  before_image_url?: string | null
+  after_image_url?: string | null
+}
+
+export interface DesignRuleCoverageItem {
+  item_key: string
+  story_id: number
+  story_name: string
+  target_type: 'cover' | 'body' | 'guide'
+  chapter_number: number
+  page_number: number | null
+  chapter_title: string
+  prompt: string
+  prompt_hash: string
+  deterministic: Record<string, unknown>
+  ai_status: 'pending' | 'covered' | 'partial' | 'missing' | 'not_applicable' | 'not_generated' | 'error'
+  ai_confidence: number
+  ai_evidence: string[]
+  ai_missing: string[]
+  ai_suggested_fix: string
+  ai_reason: string
+  confirm_status: 'pending' | 'confirmed'
+  confirmed_at: string | null
+  confirmation_note: string
+  final_status: string
+}
+
+export interface DesignRuleCoverageRun {
+  id: number
+  rule_id: number
+  feedback_id: number
+  rule_version: number
+  scope_snapshot: Record<string, unknown>
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'interrupted'
+  total: number
+  processed: number
+  covered: number
+  partial: number
+  missing: number
+  pending: number
+  error_count: number
+  items: DesignRuleCoverageItem[]
+  error_message: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
 }

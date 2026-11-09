@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import base64
+
 from tests.test_breakdowns import _prepare
 from tests.test_uploads import JPEG_BYTES, PNG_BYTES
 
@@ -28,6 +30,20 @@ def _upload_asset(client, story_id, index, data=PNG_BYTES, name="asset.png"):
     return client.post(
         f"/api/stories/{story_id}/breakdown/characters/{index}/asset-image",
         files={"file": (name, data, content_type)},
+    )
+
+
+def _ingest_asset(client, story_id, index, payload):
+    return client.post(
+        f"/api/stories/{story_id}/breakdown/characters/{index}/asset-image/ingest",
+        json=payload,
+    )
+
+
+def _ingest_assets_batch(client, story_id, items):
+    return client.post(
+        f"/api/stories/{story_id}/breakdown/characters/asset-images/ingest",
+        json={"items": items},
     )
 
 
@@ -54,6 +70,175 @@ def test_upload_character_asset_and_static_access(client):
     # GET breakdown 时携带地址，且静态可访问
     assert _get_cards(client, story["id"])[0]["asset_url"] == card["asset_url"]
     assert client.get(card["asset_url"]).status_code == 200
+
+
+def test_ingest_character_asset_base64(client):
+    """外部生图 AI 用 base64 回传，与 multipart 上传等价。"""
+    story, _ = _prepare(client)
+    response = _ingest_asset(
+        client,
+        story["id"],
+        0,
+        {
+            "image_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+            "filename": "character.png",
+        },
+    )
+    assert response.status_code == 200, response.text
+    card = response.json()
+    assert card["name"] == "我"
+    assert card["asset_filename"].endswith(".png")
+    assert card["asset_url"] == (
+        f"/uploads/character-assets/{story['id']}/{card['asset_filename']}"
+    )
+    assert client.get(card["asset_url"]).status_code == 200
+    assert _get_cards(client, story["id"])[0]["asset_url"] == card["asset_url"]
+
+
+def test_ingest_character_asset_replaces_old_file(client, app_settings):
+    story, _ = _prepare(client)
+    first = _ingest_asset(
+        client,
+        story["id"],
+        0,
+        {"image_base64": base64.b64encode(PNG_BYTES).decode("ascii")},
+    ).json()
+    old_path = _asset_path(app_settings, story["id"], first["asset_filename"])
+    assert old_path.is_file()
+
+    second = _ingest_asset(
+        client,
+        story["id"],
+        0,
+        {"image_base64": base64.b64encode(JPEG_BYTES).decode("ascii")},
+    ).json()
+    assert second["asset_filename"] != first["asset_filename"]
+    assert not old_path.exists()
+    assert len(list(old_path.parent.iterdir())) == 1
+
+
+def test_ingest_character_asset_rejects_two_sources(client):
+    story, _ = _prepare(client)
+    response = _ingest_asset(
+        client,
+        story["id"],
+        0,
+        {
+            "image_url": "https://example.com/character.png",
+            "image_base64": "AAAA",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_ingest_character_asset_rejects_invalid_base64(client):
+    story, _ = _prepare(client)
+    response = _ingest_asset(
+        client,
+        story["id"],
+        0,
+        {"image_base64": "not-a-valid-base64"},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_IMAGE_BASE64"
+
+
+def test_ingest_character_assets_batch_base64(client):
+    story, _ = _prepare(client)
+    response = _ingest_assets_batch(
+        client,
+        story["id"],
+        [
+            {
+                "character_index": 0,
+                "image_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+            },
+            {
+                "character_index": 1,
+                "image_base64": base64.b64encode(JPEG_BYTES).decode("ascii"),
+            },
+        ],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] == 2
+    assert body["succeeded"] == 2
+    assert body["failed"] == 0
+    assert all(item["ok"] for item in body["items"])
+    for item in body["items"]:
+        assert item["asset_url"]
+        assert client.get(item["asset_url"]).status_code == 200
+    cards = _get_cards(client, story["id"])
+    assert cards[0]["asset_url"] and cards[1]["asset_url"]
+
+
+def test_ingest_character_assets_batch_partial_failure(client):
+    story, _ = _prepare(client)
+    response = _ingest_assets_batch(
+        client,
+        story["id"],
+        [
+            {
+                "character_index": 0,
+                "image_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+            },
+            {
+                "character_index": 9,
+                "image_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+            },
+        ],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["succeeded"] == 1
+    assert body["failed"] == 1
+    failed = next(item for item in body["items"] if not item["ok"])
+    assert failed["code"] == "CHARACTER_NOT_FOUND"
+    # 成功的角色仍然写入
+    assert _get_cards(client, story["id"])[0]["asset_url"]
+
+
+def test_ingest_character_assets_batch_rejects_duplicate_index(client):
+    story, _ = _prepare(client)
+    response = _ingest_assets_batch(
+        client,
+        story["id"],
+        [
+            {
+                "character_index": 0,
+                "image_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+            },
+            {
+                "character_index": 0,
+                "image_base64": base64.b64encode(JPEG_BYTES).decode("ascii"),
+            },
+        ],
+    )
+    assert response.status_code == 422
+
+
+def test_ingest_character_asset_requires_existing_character(client):
+    story, _ = _prepare(client)
+    response = _ingest_asset(
+        client,
+        story["id"],
+        9,
+        {"image_base64": base64.b64encode(PNG_BYTES).decode("ascii")},
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "CHARACTER_NOT_FOUND"
+
+    assert (
+        client.delete(f"/api/stories/{story['id']}/breakdown").status_code == 204
+    )
+    response = _ingest_asset(
+        client,
+        story["id"],
+        0,
+        {"image_base64": base64.b64encode(PNG_BYTES).decode("ascii")},
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "BREAKDOWN_NOT_FOUND"
 
 
 def test_replace_character_asset_deletes_old_file(client, app_settings):

@@ -45,6 +45,7 @@ const KNOWN_LABELS = [
   '角色一致性',
   '画面形式',
   '文字区',
+  '冲击层',
   '页码',
   '风格禁区',
   '负面提示词',
@@ -75,9 +76,10 @@ function parseLabeledPrompt(prompt: string): PromptSection[] | null {
     const bracket = trimmed.match(/^【([^】]{1,10})】\s*(.*)$/)
     const colon = trimmed.match(/^([^：:]{1,10})[：:]\s*(.+)$/)
     const label = bracket?.[1] ?? (colon?.[1] ?? '')
-    const isKnown = KNOWN_LABELS.includes(label)
 
-    if (isKnown) {
+    // 【标签】是显式分块，任何标签都保留；
+    // 只有旧的「标签：」格式才需要白名单，避免把普通句子误判成分块。
+    if (bracket || KNOWN_LABELS.includes(label)) {
       sections.push({
         label,
         text: (bracket?.[2] ?? colon?.[2] ?? '').trim(),
@@ -95,7 +97,7 @@ function parseLabeledPrompt(prompt: string): PromptSection[] | null {
 
 /** 文字区固定顶部说明：标红内嵌在旁白行内，不再单独描述文字块数量。 */
 const TEXT_AREA_TOP =
-  '顶部留白：画面上方预留大面积纯净白色留白（不铺纸纹、无泛黄底色）。'
+  '顶部留白：画面上方预留大面积干净的浅米色素描纸留白（保留纸张颗粒，不铺深色底纹、不压暗、无泛黄底色）。'
 
 /** 旧提示词里文字区的小标题；用于把一个字段截到下一个字段之前。 */
 const TEXT_AREA_LABELS =
@@ -403,7 +405,7 @@ function parseLegacyPrompt(prompt: string): PromptSection[] | null {
  * 并明确告诉 AI：气泡里只出现台词本身。
  */
 const DIALOGUE_NOTE =
-  '气泡内只画台词文字本身，不画说话人姓名、引号、冒号、序号等任何标注'
+  '纯白色实心填充，黑色细手绘轮廓；不要米色、纸色、半透明或与背景同色；气泡内只画台词文字本身，不画说话人姓名、引号、冒号、序号等任何标注'
 
 /** 默认气泡位置：旧数据缺少位置描述时使用，与技能示例保持一致。 */
 const DEFAULT_BUBBLE_POSITION = '其头侧，圆润手绘气泡描边'

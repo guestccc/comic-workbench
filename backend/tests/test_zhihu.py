@@ -288,6 +288,64 @@ def test_alias_suggestions_filter_invalid_and_duplicates(
     assert TITLE in messages[1]["content"]
 
 
+def test_alias_suggestions_retry_when_lengths_invalid(
+    client, configure_key, mock_deepseek
+):
+    """模型全部返回 5 字别名时，追加纠正提示重试一次。"""
+    story = client.post(
+        "/api/stories",
+        json={"name": TITLE, "content": "故事内容。"},
+    ).json()
+    mock_deepseek["response"] = [
+        make_response(
+            raw_content=json.dumps(
+                {
+                    "aliases": [
+                        "晚风告白",
+                        "橘子汽水很",
+                        "南巷旧梦",
+                        "月亮替我",
+                        "春日迟迟",
+                        "旧信落在",
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        ),
+        make_response(
+            raw_content=json.dumps(
+                {
+                    "aliases": [
+                        "晚风替我告白",
+                        "橘子汽水很甜",
+                        "南巷旧梦未醒",
+                        "月亮替我说话",
+                        "春日迟迟不归",
+                        "旧信落在风里",
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        ),
+    ]
+
+    response = client.post(
+        f"/api/stories/{story['id']}/zhihu/alias-suggestions"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["aliases"] == [
+        "晚风替我告白",
+        "橘子汽水很甜",
+        "南巷旧梦未醒",
+        "月亮替我说话",
+        "春日迟迟不归",
+        "旧信落在风里",
+    ]
+    assert len(mock_deepseek["calls"]) == 2
+    _, retry_messages = mock_deepseek["calls"][1]
+    assert "6、7 或 8 个汉字" in retry_messages[-1]["content"]
+
+
 def test_alias_suggestions_require_story_name_and_key(
     client, configure_key, mock_deepseek
 ):
@@ -329,3 +387,5 @@ def test_generate_copy_includes_zhihu_alias(
     _, messages = mock_deepseek["calls"][0]
     assert "【橘子汽水很甜】" in messages[0]["content"]
     assert "【橘子汽水很甜】" in messages[1]["content"]
+    for option in response.json()["options"]:
+        assert option["content"].startswith("【橘子汽水很甜】\n")

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import {
   Alert,
   App,
+  AutoComplete,
   Button,
   Card,
   Form,
@@ -35,6 +36,29 @@ interface ZhihuFormValues {
 }
 
 const ALIAS_PATTERN = /^[一-鿿]{6,8}$/
+
+/** 标题中的连续两个汉字；别名不能复用其中任意一组。 */
+const titleBigrams = (title: string) => {
+  const chars = Array.from(title)
+    .filter((char) => /[一-鿿]/.test(char))
+    .join('')
+  const bigrams = new Set<string>()
+  for (let index = 0; index < chars.length - 1; index += 1) {
+    bigrams.add(chars.slice(index, index + 2))
+  }
+  return bigrams
+}
+
+/** 返回别名复用的标题连续两字；没有复用返回 null。 */
+const findReusedTitleText = (title: string, alias: string) => {
+  if (!title) return null
+  const forbidden = titleBigrams(title)
+  for (let index = 0; index < alias.length - 1; index += 1) {
+    const bigram = alias.slice(index, index + 2)
+    if (forbidden.has(bigram)) return bigram
+  }
+  return null
+}
 
 /**
  * 故事级知乎推广信息卡片。
@@ -400,6 +424,16 @@ export default function ZhihuInfoCard({
                       new Error('每个别名必须是 6–8 个汉字'),
                     )
                   }
+                  for (const alias of aliases) {
+                    const reused = findReusedTitleText(storyTitle, alias)
+                    if (reused) {
+                      return Promise.reject(
+                        new Error(
+                          `别名不能使用原文标题中的连续两个字「${reused}」`,
+                        ),
+                      )
+                    }
+                  }
                   if (new Set(aliases).size !== aliases.length) {
                     return Promise.reject(
                       new Error('候选别名不能重复'),
@@ -453,16 +487,6 @@ export default function ZhihuInfoCard({
                       new Error('最终别名必须是 6–8 个汉字'),
                     )
                   }
-                  const aliases = (
-                    (form.getFieldValue('zhihu_aliases') as
-                      | string[]
-                      | undefined) ?? []
-                  ).map((alias) => alias.trim())
-                  if (!aliases.includes(text)) {
-                    return Promise.reject(
-                      new Error('最终别名必须先从候选别名里添加'),
-                    )
-                  }
                   if (!storyTitle) {
                     return Promise.reject(
                       new Error(
@@ -470,21 +494,49 @@ export default function ZhihuInfoCard({
                       ),
                     )
                   }
+                  const reused = findReusedTitleText(storyTitle, text)
+                  if (reused) {
+                    return Promise.reject(
+                      new Error(
+                        `别名不能使用原文标题中的连续两个字「${reused}」`,
+                      ),
+                    )
+                  }
+                  const candidates = (
+                    (form.getFieldValue('zhihu_aliases') ?? []) as string[]
+                  )
+                    .map((alias) => alias.trim())
+                    .filter(Boolean)
+                  if (
+                    candidates.length >= 20 &&
+                    !candidates.includes(text)
+                  ) {
+                    return Promise.reject(
+                      new Error(
+                        '候选别名已达 20 个；请先删掉一个候选，或从候选里选择',
+                      ),
+                    )
+                  }
                   return Promise.resolve()
                 },
               },
             ]}
-            extra="可以稍后再标注；只有这个最终别名会写进发文正文开头。"
+            extra="可从候选里选，也可以直接输入；直接输入的别名保存后会自动加入候选列表。只有这个最终别名会写进发文正文开头。"
           >
-            <Select
+            <AutoComplete
               allowClear
-              placeholder="先添加候选别名，再在这里标注最终使用的"
+              placeholder="从候选里选，或直接输入（6–8 个汉字）"
               options={watchedAliases
                 .map((alias) => alias.trim())
                 .filter(
                   (alias) => alias && ALIAS_PATTERN.test(alias),
                 )
                 .map((alias) => ({ value: alias, label: alias }))}
+              filterOption={(inputValue, option) =>
+                String(option?.value ?? '')
+                  .toLowerCase()
+                  .includes(inputValue.trim().toLowerCase())
+              }
             />
           </Form.Item>
         </Form>

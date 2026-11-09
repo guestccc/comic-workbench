@@ -111,8 +111,8 @@ export default function ChapterCoverOptimizerModal({
       message.warning('主标题、副标题和画面提示词都不能为空')
       return
     }
-    if (countChineseChars(main) >= 15) {
-      message.warning('主标题必须少于 15 个汉字')
+    if (countChineseChars(main) > 12) {
+      message.warning('主标题不能超过 12 个汉字')
       return
     }
     if (countChineseChars(sub) >= 35) {
@@ -242,7 +242,7 @@ export default function ChapterCoverOptimizerModal({
             </Typography.Title>
             <div>
               <Typography.Text strong>
-                主标题（{countChineseChars(result.narration_main)}/15 字）
+                主标题（{countChineseChars(result.narration_main)}/12 字）
               </Typography.Text>
               <Input
                 value={result.narration_main}

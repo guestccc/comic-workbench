@@ -47,10 +47,12 @@ def test_migration_adds_art_style_id(tmp_path):
     try:
         apply_schema_migrations(engine)
         assert "art_style_id" in _columns(engine)
+        assert "sensitive_edit" in _columns(engine)
 
         # 幂等：重复执行不报错
         apply_schema_migrations(engine)
         assert "art_style_id" in _columns(engine)
+        assert "sensitive_edit" in _columns(engine)
     finally:
         engine.dispose()
 

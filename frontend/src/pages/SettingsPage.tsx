@@ -1,15 +1,35 @@
 import { useEffect, useState } from 'react'
-import { App } from 'antd'
+import { App, Tabs } from 'antd'
 import PageHeader from '../components/PageHeader'
 import DeepSeekKeyPanel from '../components/DeepSeekKeyPanel'
+import ImageProviderPanel from '../components/ImageProviderPanel'
+import PromptTemplatePanel from '../components/PromptTemplatePanel'
+import SensitiveWordsPanel from '../components/SensitiveWordsPanel'
 import { api, getErrorMessage } from '../api/client'
 import type { SettingsData } from '../types'
 
-/** 设置页：独立管理 DeepSeek 服务配置。 */
+const SETTINGS_TAB_KEY = 'comic-workbench-settings-tab'
+const SETTINGS_TABS = ['deepseek', 'image', 'templates', 'sensitive'] as const
+type SettingsTabKey = (typeof SETTINGS_TABS)[number]
+
+function readStoredTab(): SettingsTabKey {
+  try {
+    const stored = window.localStorage.getItem(SETTINGS_TAB_KEY)
+    if (stored && (SETTINGS_TABS as readonly string[]).includes(stored)) {
+      return stored as SettingsTabKey
+    }
+  } catch {
+    // localStorage 不可用时只回退默认标签，不影响设置功能
+  }
+  return 'deepseek'
+}
+
+/** 设置页：按标签管理 DeepSeek、生图、提示词模板与敏感词库。 */
 export default function SettingsPage() {
   const { message } = App.useApp()
   const [settings, setSettings] = useState<SettingsData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>(readStoredTab)
 
   useEffect(() => {
     let cancelled = false
@@ -37,17 +57,60 @@ export default function SettingsPage() {
     }
   }, [message])
 
+  const handleTabChange = (key: string) => {
+    if (!(SETTINGS_TABS as readonly string[]).includes(key)) return
+    setActiveTab(key as SettingsTabKey)
+    try {
+      window.localStorage.setItem(SETTINGS_TAB_KEY, key)
+    } catch {
+      // 只影响下次默认标签，不影响当前设置
+    }
+  }
+
   return (
     <div>
       <PageHeader
         title="设置"
-        description="配置 DeepSeek 服务后，即可使用 AI 生成文案与优化提示词。"
+        description="按标签配置 DeepSeek、生图服务、提示词模板与敏感词库。"
       />
 
-      <DeepSeekKeyPanel
-        settings={settings}
-        loading={loading}
-        onSaved={setSettings}
+      <Tabs
+        activeKey={activeTab}
+        onChange={handleTabChange}
+        items={[
+          {
+            key: 'deepseek',
+            label: 'DeepSeek 服务',
+            children: (
+              <DeepSeekKeyPanel
+                settings={settings}
+                loading={loading}
+                onSaved={setSettings}
+              />
+            ),
+          },
+          {
+            key: 'image',
+            label: '生图服务',
+            children: (
+              <ImageProviderPanel
+                settings={settings}
+                loading={loading}
+                onSaved={setSettings}
+              />
+            ),
+          },
+          {
+            key: 'templates',
+            label: '提示词模板',
+            children: <PromptTemplatePanel />,
+          },
+          {
+            key: 'sensitive',
+            label: '敏感词库',
+            children: <SensitiveWordsPanel />,
+          },
+        ]}
       />
     </div>
   )

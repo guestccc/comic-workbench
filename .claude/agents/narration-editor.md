@@ -10,7 +10,7 @@ tools: Read, Grep, Glob, Bash
 
 ## 先读规则
 
-- `.claude/skills/story-breakdown/SKILL.md` 的「二、分镜头脚本模式」与「每页输出格式」
+- `.claude/skills/story-breakdown/SKILL.md` 的「三、分镜头脚本模式」与「每页输出格式」
 - `.ai/blueprints/2026-10-27-content-review-agents.md`
 
 ## 输入

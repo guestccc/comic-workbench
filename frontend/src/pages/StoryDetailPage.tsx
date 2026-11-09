@@ -5,18 +5,21 @@ import {
   CopyOutlined,
   ReadOutlined,
   ReloadOutlined,
+  SafetyOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useNavigate, useParams } from 'react-router-dom'
 import CharacterCardsTab from '../components/CharacterCardsTab'
 import PageHeader from '../components/PageHeader'
 import PostConfigTab from '../components/PostConfigTab'
+import SensitiveWordModal from '../components/SensitiveWordModal'
 import StoryboardChaptersTab from '../components/StoryboardChaptersTab'
 import StoryboardMappingTab from '../components/StoryboardMappingTab'
 import StoryboardTab from '../components/StoryboardTab'
 import ZhihuInfoCard from '../components/ZhihuInfoCard'
 import { api, ApiError, getErrorMessage } from '../api/client'
 import type {
+  SensitiveApplyResult,
   SettingsData,
   Story,
   StoryBreakdown,
@@ -55,6 +58,7 @@ export default function StoryDetailPage() {
   const [postConfig, setPostConfig] = useState<StoryPostConfig | null>(null)
   const [settings, setSettings] = useState<SettingsData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [sensitiveOpen, setSensitiveOpen] = useState(false)
   // 章节发布会成为主要工作区；首次加载时根据数据选择默认 tab
   const [activeTab, setActiveTab] = useState('mapping')
   // 分镜对照里勾选要生成脚本的对照段；已有脚本时默认选中它实际用到的段
@@ -282,6 +286,12 @@ export default function StoryDetailPage() {
               返回列表
             </Button>
             <Button
+              icon={<SafetyOutlined />}
+              onClick={() => setSensitiveOpen(true)}
+            >
+              敏感词替换
+            </Button>
+            <Button
               icon={<ReloadOutlined />}
               onClick={() => void refreshBreakdown()}
             >
@@ -412,6 +422,7 @@ export default function StoryDetailPage() {
                 <StoryboardChaptersTab
                   story={story}
                   breakdown={breakdown}
+                  imageEnabled={settings?.image_provider.configured ?? false}
                   onRefresh={refreshBreakdown}
                 />
               ),
@@ -435,6 +446,7 @@ export default function StoryDetailPage() {
                 <CharacterCardsTab
                   breakdown={breakdown}
                   aiEnabled={settings?.deepseek.configured ?? false}
+                  imageEnabled={settings?.image_provider.configured ?? false}
                   prefixPrompt={settings?.image_prefix_prompt ?? ''}
                   artStyleName={story.art_style_name}
                   onPrefixSaved={setSettings}
@@ -469,6 +481,23 @@ export default function StoryDetailPage() {
           ]}
         />
       </Card>
+
+      <SensitiveWordModal
+        open={sensitiveOpen}
+        text={story.content}
+        onClose={() => setSensitiveOpen(false)}
+        onApply={async (result: SensitiveApplyResult) => {
+          const updated = await api.applyStorySensitiveWords(
+            story.id,
+            result.items,
+          )
+          setStory(updated)
+          if (breakdown) {
+            message.warning('原文已替换；已生成的优化文和对照表可能需要重新生成')
+            await refreshBreakdown()
+          }
+        }}
+      />
     </div>
   )
 }

@@ -23,6 +23,7 @@ from ..schemas import (
     PostUpdate,
 )
 from ..services.deepseek import ChapterCopyContext, generate_copy
+from ..services.zhihu import apply_alias_prefix
 
 router = APIRouter(prefix="/api/posts", tags=["发文"])
 
@@ -76,7 +77,11 @@ def create_post(payload: PostCreate, db: Session = Depends(get_db)) -> PostRead:
     post = Post(
         story_id=payload.story_id,
         title=payload.title,
-        content=payload.content,
+        content=(
+            apply_alias_prefix(payload.content, story.zhihu_alias)
+            if story.zhihu_alias
+            else payload.content
+        ),
         status=payload.status,
     )
     db.add(post)
@@ -239,7 +244,12 @@ def update_post(
     if payload.title is not None:
         post.title = payload.title
     if payload.content is not None:
-        post.content = payload.content
+        story = db.get(Story, post.story_id)
+        post.content = (
+            apply_alias_prefix(payload.content, story.zhihu_alias)
+            if story is not None and story.zhihu_alias
+            else payload.content
+        )
     if payload.status is not None:
         post.status = payload.status
 

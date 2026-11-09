@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -21,6 +22,11 @@ from .database import Base
 from .config import (
     MAX_ART_STYLE_ID_LENGTH,
     MAX_ART_STYLE_NAME_LENGTH,
+    MAX_DESIGN_FEEDBACK_CONTENT_LENGTH,
+    MAX_DESIGN_FEEDBACK_IMAGE_URL_LENGTH,
+    MAX_DESIGN_FEEDBACK_SOURCE_URL_LENGTH,
+    MAX_DESIGN_FEEDBACK_SUMMARY_LENGTH,
+    MAX_DESIGN_FEEDBACK_TITLE_LENGTH,
     MAX_POST_TITLE_LENGTH,
     MAX_STORY_CONTENT_LENGTH,
     MAX_STORY_NAME_LENGTH,
@@ -68,6 +74,8 @@ class Story(Base):
     zhihu_aliases: Mapped[list[str]] = mapped_column(
         JSON, default=list, nullable=False
     )
+    # 敏感词替换审计：原文、替换后文本、逐词次数、词库版本与时间
+    sensitive_edit: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -152,6 +160,413 @@ class StoryBreakdown(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class ImageGeneration(Base):
+    """一次生图调用的历史记录与暂存文件索引。
+
+    生成结果先写入历史目录，用户在对比弹窗确认后才复制到正式路径；
+    清除历史只删除历史文件与记录，不影响正式角色资产图 / 封面 / 分镜图。
+    """
+
+    __tablename__ = "image_generations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('generated', 'used', 'failed')",
+            name="ck_image_generations_status",
+        ),
+        Index("ix_image_generations_story_target", "story_id", "target_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    story_id: Mapped[int] = mapped_column(
+        ForeignKey("stories.id", ondelete="CASCADE"), nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    character_name: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    chapter_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    size: Mapped[str] = mapped_column(String(20), nullable=False)
+    quality: Mapped[str] = mapped_column(String(20), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    reference_names: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_bytes: Mapped[int] = mapped_column("bytes", Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default="generated", nullable=False
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class DesignFeedback(Base):
+    """设计建议库：小红书 / 手动建议，可关联故事或章节。
+
+    建议本身是源数据；每次实际改动通过 DesignFeedbackApplication 记录，
+    应用记录里的改前 / 改后只是审计快照，不反向成为封面或正文的源。
+    """
+
+    __tablename__ = "design_feedbacks"
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('xiaohongshu', 'manual')",
+            name="ck_design_feedbacks_source",
+        ),
+        CheckConstraint(
+            "category IN ('cover', 'comic', 'title', 'color', "
+            "'expression', 'text', 'pacing', 'other')",
+            name="ck_design_feedbacks_category",
+        ),
+        CheckConstraint(
+            "scope IN ('global', 'story', 'chapter')",
+            name="ck_design_feedbacks_scope",
+        ),
+        CheckConstraint(
+            "priority IN ('low', 'medium', 'high')",
+            name="ck_design_feedbacks_priority",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'applied', 'verified', 'archived')",
+            name="ck_design_feedbacks_status",
+        ),
+        CheckConstraint(
+            "rule_target IN ('cover', 'comic', 'all')",
+            name="ck_design_feedbacks_rule_target",
+        ),
+        Index("ix_design_feedbacks_status", "status"),
+        Index("ix_design_feedbacks_story_id", "story_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(
+        String(MAX_DESIGN_FEEDBACK_TITLE_LENGTH), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(20), default="xiaohongshu", nullable=False
+    )
+    source_url: Mapped[str] = mapped_column(
+        String(MAX_DESIGN_FEEDBACK_SOURCE_URL_LENGTH), default="", nullable=False
+    )
+    screenshot_filename: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    category: Mapped[str] = mapped_column(
+        String(20), default="other", nullable=False
+    )
+    scope: Mapped[str] = mapped_column(
+        String(20), default="global", nullable=False
+    )
+    # 指定故事 / 章节时使用；故事删除后保留建议，只解除关联
+    story_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stories.id", ondelete="SET NULL"), nullable=True
+    )
+    chapter_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    priority: Mapped[str] = mapped_column(
+        String(10), default="medium", nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="open", nullable=False
+    )
+    # 升级为通用规则后，rendered prompt 会自动追加【设计规则】分块。
+    # rule_target=cover 进封面，comic 进正文，all 两边都进。
+    is_rule: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    rule_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    rule_target: Mapped[str] = mapped_column(
+        String(20), default="cover", nullable=False
+    )
+    rule_promoted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    applications: Mapped[list["DesignFeedbackApplication"]] = relationship(
+        back_populates="feedback",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    rules: Mapped[list["DesignRule"]] = relationship(
+        back_populates="feedback",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class DesignFeedbackApplication(Base):
+    """一次建议应用：目标 + 改前 / 改后快照。"""
+
+    __tablename__ = "design_feedback_applications"
+    __table_args__ = (
+        CheckConstraint(
+            "target_type IN ('cover', 'page', 'guide', 'character', 'other')",
+            name="ck_design_feedback_applications_target_type",
+        ),
+        Index(
+            "ix_design_feedback_applications_feedback_id", "feedback_id"
+        ),
+        Index("ix_design_feedback_applications_story_id", "story_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    feedback_id: Mapped[int] = mapped_column(
+        ForeignKey("design_feedbacks.id", ondelete="CASCADE"), nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    story_id: Mapped[int] = mapped_column(
+        ForeignKey("stories.id", ondelete="CASCADE"), nullable=False
+    )
+    chapter_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summary: Mapped[str] = mapped_column(
+        String(MAX_DESIGN_FEEDBACK_SUMMARY_LENGTH), nullable=False
+    )
+    before_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    after_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    before_image_url: Mapped[str | None] = mapped_column(
+        String(MAX_DESIGN_FEEDBACK_IMAGE_URL_LENGTH), nullable=True
+    )
+    after_image_url: Mapped[str | None] = mapped_column(
+        String(MAX_DESIGN_FEEDBACK_IMAGE_URL_LENGTH), nullable=True
+    )
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    feedback: Mapped[DesignFeedback] = relationship(
+        back_populates="applications"
+    )
+
+
+class DesignRule(Base):
+    """结构化设计规则：从建议提炼，按范围/目标/类型编译进提示词或审片。
+
+    draft 不生效；active 才参与渲染；disabled 保留历史但不使用。
+    每次修改/状态变化写入 DesignRuleRevision，便于回滚。
+    """
+
+    __tablename__ = "design_rules"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('prompt', 'negative', 'text', 'review', 'check')",
+            name="ck_design_rules_kind",
+        ),
+        CheckConstraint(
+            "target IN ('cover', 'body', 'guide', 'all')",
+            name="ck_design_rules_target",
+        ),
+        CheckConstraint(
+            "slot IN ('scene', 'cover_mode', 'text_zone', 'none')",
+            name="ck_design_rules_slot",
+        ),
+        CheckConstraint(
+            "scope_type IN ('global', 'story', 'chapter', 'pages')",
+            name="ck_design_rules_scope_type",
+        ),
+        CheckConstraint(
+            "priority IN ('hard', 'soft')",
+            name="ck_design_rules_priority",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'disabled')",
+            name="ck_design_rules_status",
+        ),
+        CheckConstraint(
+            "created_by IN ('claude', 'user')",
+            name="ck_design_rules_created_by",
+        ),
+        Index("ix_design_rules_feedback_id", "feedback_id"),
+        Index("ix_design_rules_status", "status"),
+        Index("ix_design_rules_target", "target"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    feedback_id: Mapped[int] = mapped_column(
+        ForeignKey("design_feedbacks.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(
+        String(MAX_DESIGN_FEEDBACK_TITLE_LENGTH), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), default="prompt", nullable=False)
+    target: Mapped[str] = mapped_column(String(20), default="cover", nullable=False)
+    slot: Mapped[str] = mapped_column(String(20), default="scene", nullable=False)
+    scope_type: Mapped[str] = mapped_column(
+        String(20), default="global", nullable=False
+    )
+    story_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stories.id", ondelete="SET NULL"), nullable=True
+    )
+    chapter_numbers: Mapped[list[int]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    page_numbers: Mapped[list[int]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    priority: Mapped[str] = mapped_column(
+        String(10), default="soft", nullable=False
+    )
+    requirement: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    negative_terms: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    review_check: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    check_spec: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default="draft", nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by: Mapped[str] = mapped_column(
+        String(20), default="user", nullable=False
+    )
+    template_applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    feedback: Mapped[DesignFeedback] = relationship(back_populates="rules")
+    revisions: Mapped[list["DesignRuleRevision"]] = relationship(
+        back_populates="rule",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class DesignRuleRevision(Base):
+    """规则版本快照：每次编辑 / 激活 / 停用 / 回滚追加一条。"""
+
+    __tablename__ = "design_rule_revisions"
+    __table_args__ = (
+        Index("ix_design_rule_revisions_rule_id", "rule_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("design_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    change_note: Mapped[str] = mapped_column(
+        String(MAX_DESIGN_FEEDBACK_SUMMARY_LENGTH), default="", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    rule: Mapped[DesignRule] = relationship(back_populates="revisions")
+
+
+class DesignRuleResult(Base):
+    """规则核验结果：提示词硬检查或生成图审片的人工 / Claude 判定。"""
+
+    __tablename__ = "design_rule_results"
+    __table_args__ = (
+        CheckConstraint(
+            "result IN ('passed', 'failed', 'unknown')",
+            name="ck_design_rule_results_result",
+        ),
+        CheckConstraint(
+            "reviewer IN ('claude', 'user')",
+            name="ck_design_rule_results_reviewer",
+        ),
+        Index("ix_design_rule_results_rule_id", "rule_id"),
+        Index("ix_design_rule_results_story_id", "story_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("design_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    story_id: Mapped[int] = mapped_column(
+        ForeignKey("stories.id", ondelete="CASCADE"), nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    chapter_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result: Mapped[str] = mapped_column(String(20), nullable=False)
+    message: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewer: Mapped[str] = mapped_column(
+        String(20), default="claude", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class PromptRenderSnapshot(Base):
+    """一次渲染的提示词快照：用于追溯用了哪些规则，并支持恢复上一版提示词。"""
+
+    __tablename__ = "prompt_render_snapshots"
+    __table_args__ = (
+        Index("ix_prompt_render_snapshots_story_target", "story_id", "target_type"),
+        Index("ix_prompt_render_snapshots_chapter", "story_id", "chapter_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    story_id: Mapped[int] = mapped_column(
+        ForeignKey("stories.id", ondelete="CASCADE"), nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    chapter_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    template_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    context: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    applied_rules: Mapped[list[dict]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    rule_checks: Mapped[list[dict]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    restored_from_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class PromptTemplateVersion(Base):
+    """正文 / 封面提示词模板的历史版本；保存或恢复时追加，不删除旧版本。"""
+
+    __tablename__ = "prompt_template_versions"
+    __table_args__ = (
+        Index("ix_prompt_template_versions_type", "template_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    template_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
     )
 
 
@@ -252,4 +667,41 @@ class StoryChapterPostConfig(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class DesignRuleCoverageRun(Base):
+    """规则落实检测：按规则范围扫描提示词，AI 判定后等待人工确认。"""
+
+    __tablename__ = "design_rule_coverage_runs"
+    __table_args__ = (
+        Index("ix_design_rule_coverage_runs_rule_id", "rule_id"),
+        Index("ix_design_rule_coverage_runs_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("design_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    feedback_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    rule_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    scope_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
+    total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    covered: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    partial: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    missing: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pending: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    items: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

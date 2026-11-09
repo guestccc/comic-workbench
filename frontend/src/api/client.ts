@@ -1,12 +1,45 @@
 import type {
+  AliasRestoreResult,
+  AliasStampResult,
   ArtStyleOptimizePayload,
   ArtStylesPayload,
+  ChapterAssetArchive,
   ChapterCoverOptimizePayload,
   ChapterCoverOptimizeResult,
   CharacterOptimizePayload,
+  CoverCopyOptionsPayload,
+  CoverCopyOptionsResponse,
   CharacterSyncItem,
   CharacterSyncResult,
+  DesignFeedback,
+  DesignFeedbackApplication,
+  DesignFeedbackApplicationPayload,
+  DesignFeedbackCategory,
+  DesignFeedbackDetail,
+  DesignFeedbackPayload,
+  DesignFeedbackRulePromotePayload,
+  DesignFeedbackScope,
+  DesignFeedbackStatus,
+  DesignFeedbackUpdatePayload,
+  DesignRule,
+  DesignRuleCoverageRun,
+  DesignRulePayload,
+  DesignRulePreviewPayload,
+  DesignRuleOnceApplyResult,
+  DesignRuleOncePreview,
+  DesignRuleOnceTarget,
+  DesignRulePreviewResult,
+  DesignRuleResult,
+  DesignRuleTemplateApplyResult,
+  DesignRuleTemplatePreview,
+  DesignRuleUpdatePayload,
   GeneratedCopy,
+  ImageGenerationClearResult,
+  ImageGenerationList,
+  ImageGenerationPreview,
+  ImageGenerationTarget,
+  ImageProviderPayload,
+  ImageProviderTestResult,
   MappingDecision,
   MappingReview,
   MappingReviewApplyResult,
@@ -14,6 +47,18 @@ import type {
   Post,
   PostStatus,
   PromptOptimizePayload,
+  PromptRenderPayload,
+  PromptRenderResult,
+  PromptSnapshot,
+  PromptSnapshotRestoreResult,
+  PromptTemplatesData,
+  PromptTemplatesPayload,
+  PromptTemplateVersion,
+  SensitiveApplyItem,
+  SensitiveApplyResult,
+  SensitiveEdit,
+  SensitiveScanResult,
+  SensitiveWord,
   SettingsData,
   Story,
   StoryboardPage,
@@ -51,11 +96,20 @@ interface PostFilters {
   status?: PostStatus
 }
 
+interface DesignFeedbackFilters {
+  status?: DesignFeedbackStatus
+  category?: DesignFeedbackCategory
+  scope?: DesignFeedbackScope
+  story_id?: number
+  keyword?: string
+}
+
 interface StoryPayload {
   name: string
   content: string
   cover_filename: string | null
   art_style_id: string | null
+  sensitive_edit?: SensitiveEdit | null
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -116,6 +170,93 @@ export const api = {
     }),
   clearDeepseekKey: () =>
     request<SettingsData>('/api/settings/deepseek', { method: 'DELETE' }),
+  getPromptTemplates: () =>
+    request<PromptTemplatesData>('/api/settings/prompt-templates'),
+  savePromptTemplates: (payload: PromptTemplatesPayload) =>
+    request<PromptTemplatesData>('/api/settings/prompt-templates', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  listPromptTemplateVersions: (templateType: 'body' | 'cover') =>
+    request<PromptTemplateVersion[]>(
+      `/api/settings/prompt-templates/versions?template_type=${templateType}`,
+    ),
+  restorePromptTemplateVersion: (versionId: number) =>
+    request<PromptTemplatesData>(
+      `/api/settings/prompt-templates/versions/${versionId}/restore`,
+      { method: 'POST' },
+    ),
+  renderPromptTemplate: (payload: PromptRenderPayload) =>
+    request<PromptRenderResult>('/api/settings/prompt-templates/render', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  listPromptSnapshots: (
+    storyId: number,
+    params: {
+      target_type?: 'cover' | 'body'
+      chapter_number?: number
+      page_number?: number
+      limit?: number
+    } = {},
+  ) => {
+    const query = new URLSearchParams()
+    if (params.target_type) query.set('target_type', params.target_type)
+    if (params.chapter_number)
+      query.set('chapter_number', String(params.chapter_number))
+    if (params.page_number) query.set('page_number', String(params.page_number))
+    if (params.limit) query.set('limit', String(params.limit))
+    const suffix = query.toString()
+    return request<PromptSnapshot[]>(
+      `/api/stories/${storyId}/prompt-snapshots${suffix ? `?${suffix}` : ''}`,
+    )
+  },
+  restorePromptSnapshot: (snapshotId: number) =>
+    request<PromptSnapshotRestoreResult>(
+      `/api/prompt-snapshots/${snapshotId}/restore`,
+      { method: 'POST' },
+    ),
+  saveImageProvider: (payload: ImageProviderPayload) =>
+    request<SettingsData>('/api/settings/image-provider', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  clearImageProviderKey: () =>
+    request<SettingsData>('/api/settings/image-provider/key', {
+      method: 'DELETE',
+    }),
+  testImageProvider: () =>
+    request<ImageProviderTestResult>('/api/settings/image-provider/test', {
+      method: 'POST',
+    }),
+
+  // 敏感词
+  getSensitiveWords: () =>
+    request<{ words: SensitiveWord[] }>('/api/settings/sensitive-words'),
+  getDefaultSensitiveWords: () =>
+    request<{ words: SensitiveWord[] }>(
+      '/api/settings/sensitive-words/defaults',
+    ),
+  saveSensitiveWords: (words: SensitiveWord[]) =>
+    request<{ words: SensitiveWord[] }>('/api/settings/sensitive-words', {
+      method: 'PUT',
+      body: JSON.stringify({ words }),
+    }),
+  scanSensitiveWords: (text: string) =>
+    request<SensitiveScanResult>('/api/sensitive-words/scan', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+  applySensitiveWords: (text: string, items: SensitiveApplyItem[]) =>
+    request<SensitiveApplyResult>('/api/sensitive-words/apply', {
+      method: 'POST',
+      body: JSON.stringify({ text, items }),
+    }),
+  applyStorySensitiveWords: (storyId: number, items: SensitiveApplyItem[]) =>
+    request<Story>(`/api/stories/${storyId}/sensitive-words/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
 
   // 故事
   listStories: () => request<Story[]>('/api/stories'),
@@ -132,6 +273,137 @@ export const api = {
   getStory: (id: number) => request<Story>(`/api/stories/${id}`),
   deleteStory: (id: number) =>
     request<void>(`/api/stories/${id}`, { method: 'DELETE' }),
+
+  // 设计建议库
+  listDesignFeedbacks: (filters: DesignFeedbackFilters = {}) => {
+    const params = new URLSearchParams()
+    if (filters.status) params.set('status', filters.status)
+    if (filters.category) params.set('category', filters.category)
+    if (filters.scope) params.set('scope', filters.scope)
+    if (filters.story_id) params.set('story_id', String(filters.story_id))
+    if (filters.keyword?.trim()) params.set('keyword', filters.keyword.trim())
+    const query = params.toString()
+    return request<DesignFeedback[]>(
+      `/api/design-feedbacks${query ? `?${query}` : ''}`,
+    )
+  },
+  getDesignFeedback: (id: number) =>
+    request<DesignFeedbackDetail>(`/api/design-feedbacks/${id}`),
+  createDesignFeedback: (payload: DesignFeedbackPayload) =>
+    request<DesignFeedbackDetail>('/api/design-feedbacks', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateDesignFeedback: (id: number, payload: DesignFeedbackUpdatePayload) =>
+    request<DesignFeedbackDetail>(`/api/design-feedbacks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteDesignFeedback: (id: number) =>
+    request<void>(`/api/design-feedbacks/${id}`, { method: 'DELETE' }),
+  promoteDesignFeedback: (
+    id: number,
+    payload: DesignFeedbackRulePromotePayload,
+  ) =>
+    request<DesignFeedbackDetail>(`/api/design-feedbacks/${id}/promote`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  removeDesignFeedbackRule: (id: number) =>
+    request<DesignFeedbackDetail>(`/api/design-feedbacks/${id}/promote`, {
+      method: 'DELETE',
+    }),
+  createDesignFeedbackApplication: (
+    id: number,
+    payload: DesignFeedbackApplicationPayload,
+  ) =>
+    request<DesignFeedbackApplication>(
+      `/api/design-feedbacks/${id}/applications`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  deleteDesignFeedbackApplication: (id: number, applicationId: number) =>
+    request<void>(
+      `/api/design-feedbacks/${id}/applications/${applicationId}`,
+      { method: 'DELETE' },
+    ),
+
+  listDesignRules: (feedbackId: number) =>
+    request<DesignRule[]>(`/api/design-feedbacks/${feedbackId}/rules`),
+  createDesignRule: (feedbackId: number, payload: DesignRulePayload) =>
+    request<DesignRule>(`/api/design-feedbacks/${feedbackId}/rules`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateDesignRule: (ruleId: number, payload: DesignRuleUpdatePayload) =>
+    request<DesignRule>(`/api/design-rules/${ruleId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  activateDesignRule: (ruleId: number) =>
+    request<DesignRule>(`/api/design-rules/${ruleId}/activate`, {
+      method: 'POST',
+    }),
+  disableDesignRule: (ruleId: number) =>
+    request<DesignRule>(`/api/design-rules/${ruleId}/disable`, {
+      method: 'POST',
+    }),
+  rollbackDesignRule: (ruleId: number) =>
+    request<DesignRule>(`/api/design-rules/${ruleId}/rollback`, {
+      method: 'POST',
+    }),
+  deleteDesignRule: (ruleId: number) =>
+    request<void>(`/api/design-rules/${ruleId}`, { method: 'DELETE' }),
+  previewDesignRule: (payload: DesignRulePreviewPayload) =>
+    request<DesignRulePreviewResult>('/api/design-rules/preview', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  startDesignRuleCoverage: (ruleId: number) =>
+    request<DesignRuleCoverageRun>(`/api/design-rules/${ruleId}/coverage-runs`, {
+      method: 'POST',
+    }),
+  getLatestDesignRuleCoverage: (ruleId: number) =>
+    request<DesignRuleCoverageRun | null>(
+      `/api/design-rules/${ruleId}/coverage-runs/latest`,
+    ),
+  getDesignRuleCoverageRun: (runId: number) =>
+    request<DesignRuleCoverageRun>(`/api/design-rule-coverage-runs/${runId}`),
+  cancelDesignRuleCoverage: (runId: number) =>
+    request<DesignRuleCoverageRun>(
+      `/api/design-rule-coverage-runs/${runId}/cancel`,
+      { method: 'POST' },
+    ),
+  confirmDesignRuleCoverage: (
+    runId: number,
+    payload: { item_keys: string[]; status: 'covered' | 'missing'; note?: string },
+  ) =>
+    request<DesignRuleCoverageRun>(
+      `/api/design-rule-coverage-runs/${runId}/confirm`,
+      { method: 'PATCH', body: JSON.stringify(payload) },
+    ),
+  listDesignRuleResults: (ruleId: number) =>
+    request<DesignRuleResult[]>(`/api/design-rules/${ruleId}/results`),
+  previewDesignRuleOnce: (ruleId: number, payload: DesignRuleOnceTarget) =>
+    request<DesignRuleOncePreview>(
+      `/api/design-rules/${ruleId}/apply-once/preview`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  applyDesignRuleOnce: (ruleId: number, payload: DesignRuleOnceTarget) =>
+    request<DesignRuleOnceApplyResult>(
+      `/api/design-rules/${ruleId}/apply-once`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  previewDesignRuleTemplate: (ruleId: number) =>
+    request<DesignRuleTemplatePreview>(
+      `/api/design-rules/${ruleId}/template-preview`,
+      { method: 'POST' },
+    ),
+  applyDesignRuleTemplate: (ruleId: number) =>
+    request<DesignRuleTemplateApplyResult>(
+      `/api/design-rules/${ruleId}/apply-to-template`,
+      { method: 'POST' },
+    ),
+
   updateStoryZhihu: (id: number, payload: StoryZhihuPayload) =>
     request<Story>(`/api/stories/${id}/zhihu`, {
       method: 'PATCH',
@@ -230,6 +502,24 @@ export const api = {
       { method: 'DELETE' },
     ),
   /** 上传章节封面 / 引导卡；重复上传覆盖旧图 */
+  listChapterAssetArchives: (
+    storyId: number,
+    chapterNumber: number,
+    kind: 'cover' | 'guide',
+  ) =>
+    request<ChapterAssetArchive[]>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/assets/${kind}/archives`,
+    ),
+  restoreChapterAssetArchive: (
+    storyId: number,
+    chapterNumber: number,
+    kind: 'cover' | 'guide',
+    filename: string,
+  ) =>
+    request<{ url: string }>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/assets/${kind}/archives/${encodeURIComponent(filename)}/restore`,
+      { method: 'POST' },
+    ),
   uploadChapterCover: (storyId: number, chapterNumber: number, file: File) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -253,6 +543,16 @@ export const api = {
       `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/cover/optimize`,
       { method: 'POST', body: JSON.stringify(payload) },
     ),
+  /** 生成本章封面文案方案（3 选 1），不出图、不写库 */
+  generateCoverCopyOptions: (
+    storyId: number,
+    chapterNumber: number,
+    payload: CoverCopyOptionsPayload,
+  ) =>
+    request<CoverCopyOptionsResponse>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/cover/copy-options`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
   uploadChapterGuide: (storyId: number, chapterNumber: number, file: File) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -266,12 +566,112 @@ export const api = {
       `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/guide/image`,
       { method: 'DELETE' },
     ),
+  /** 原地批量给正文页 / 封面 / 引导卡底部加【别名】 */
+  stampStoryAlias: (
+    storyId: number,
+    payload: {
+      alias?: string
+      chapter_number?: number
+      chapter_numbers?: number[]
+      page_numbers?: number[]
+    } = {},
+  ) =>
+    request<AliasStampResult>(`/api/stories/${storyId}/alias-stamp`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  /** 从备份恢复加过别名的图片 */
+  restoreStoryAlias: (
+    storyId: number,
+    payload: {
+      chapter_number?: number
+      chapter_numbers?: number[]
+      page_numbers?: number[]
+    } = {},
+  ) =>
+    request<AliasRestoreResult>(
+      `/api/stories/${storyId}/alias-stamp/restore`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
   /** 导出单章图片（ZIP，按封面 → 正文 → 引导卡排序） */
   chapterExportUrl: (storyId: number, chapterNumber: number) =>
     `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/export`,
   /** 导出全部章节图片（ZIP，每章一个文件夹） */
   allChaptersExportUrl: (storyId: number) =>
     `/api/stories/${storyId}/breakdown/export-images`,
+  /** 生成角色三视角资产图；结果先入历史，不直接替换资产图 */
+  generateCharacterAsset: (storyId: number, characterName: string) =>
+    request<ImageGenerationPreview>(
+      `/api/stories/${storyId}/character-assets/generate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ character_name: characterName }),
+      },
+    ),
+  /** 生成章节封面；后端使用角色资产图作为参考图 */
+  generateChapterCover: (storyId: number, chapterNumber: number) =>
+    request<ImageGenerationPreview>(
+      `/api/stories/${storyId}/breakdown/chapters/${chapterNumber}/cover/generate`,
+      { method: 'POST' },
+    ),
+  listImageGenerations: (
+    storyId: number,
+    params: {
+      targetType: ImageGenerationTarget
+      characterName?: string
+      chapterNumber?: number
+      pageNumber?: number
+    },
+  ) => {
+    const query = new URLSearchParams({ target_type: params.targetType })
+    if (params.characterName !== undefined) {
+      query.set('character_name', params.characterName)
+    }
+    if (params.chapterNumber !== undefined) {
+      query.set('chapter_number', String(params.chapterNumber))
+    }
+    if (params.pageNumber !== undefined) {
+      query.set('page_number', String(params.pageNumber))
+    }
+    return request<ImageGenerationList>(
+      `/api/stories/${storyId}/image-generations?${query.toString()}`,
+    )
+  },
+  useImageGeneration: (storyId: number, generationId: string) =>
+    request<StoryBreakdown>(
+      `/api/stories/${storyId}/image-generations/${generationId}/use`,
+      { method: 'POST' },
+    ),
+  clearImageGenerations: (
+    storyId: number,
+    params: {
+      targetType: ImageGenerationTarget
+      characterName?: string
+      chapterNumber?: number
+      pageNumber?: number
+    },
+  ) => {
+    const query = new URLSearchParams({ target_type: params.targetType })
+    if (params.characterName !== undefined) {
+      query.set('character_name', params.characterName)
+    }
+    if (params.chapterNumber !== undefined) {
+      query.set('chapter_number', String(params.chapterNumber))
+    }
+    if (params.pageNumber !== undefined) {
+      query.set('page_number', String(params.pageNumber))
+    }
+    return request<ImageGenerationClearResult>(
+      `/api/stories/${storyId}/image-generations?${query.toString()}`,
+      { method: 'DELETE' },
+    )
+  },
+  deleteImageGeneration: (storyId: number, generationId: string) =>
+    request<void>(
+      `/api/stories/${storyId}/image-generations/${generationId}`,
+      { method: 'DELETE' },
+    ),
+
   /** 给单个角色上传资产图；重复上传覆盖旧图，文件保存在本地 uploads 目录 */
   uploadCharacterAsset: (
     storyId: number,

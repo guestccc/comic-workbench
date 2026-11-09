@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -16,6 +17,8 @@ from pydantic import BaseModel, Field, ValidationError
 from ..config import (
     ART_STYLE_OPTIMIZE_MAX_TOKENS,
     ART_STYLE_OPTIMIZE_SYSTEM_PROMPT,
+    CHAPTER_COVER_COPY_MAX_TOKENS,
+    CHAPTER_COVER_COPY_SYSTEM_PROMPT,
     CHAPTER_COVER_OPTIMIZE_MAX_TOKENS,
     CHAPTER_COVER_OPTIMIZE_SYSTEM_PROMPT,
     CHARACTER_OPTIMIZE_MAX_TOKENS,
@@ -39,8 +42,11 @@ from ..config import (
     ZHIHU_ALIAS_SYSTEM_PROMPT,
 )
 from ..errors import AppError
+from .zhihu import ALIAS_PATTERN, apply_alias_prefix
 from ..schemas import (
     ChapterCoverOptimizeResult,
+    CoverCopyOption,
+    CoverCopyOptionsPayload,
     GeneratedCopyOption,
     GeneratedCopyOptions,
     StoryOptimizationAnalysis,
@@ -590,6 +596,198 @@ def optimize_chapter_cover(
         ) from exc
 
 
+def _count_chinese_chars(text: str) -> int:
+    return sum(1 for char in text if "一" <= char <= "鿿")
+
+
+def _validate_cover_copy_options(
+    payload: CoverCopyOptionsPayload,
+    character_names: list[str],
+) -> list[CoverCopyOption]:
+    """校验封面文案方案的数量、字数、标红词、角色变量与推荐项。"""
+    options = payload.options
+    if len(options) < 2:
+        raise AppError(
+            502, "封面文案方案少于 2 个，请重试", "COVER_COPY_INVALID"
+        )
+    mains: set[str] = set()
+    for option in options:
+        if not option.style or not option.feature:
+            raise AppError(
+                502, "封面文案方案缺少角度或说明，请重试", "COVER_COPY_INVALID"
+            )
+        variables = list(
+            dict.fromkeys(
+                re.findall(r"\{\{([^{}]+)\}\}", option.visual_content)
+            )
+        )
+        if not option.visual_content or not variables:
+            raise AppError(
+                502,
+                "封面画面建议没有引用任何 {{角色名}}，请重试",
+                "COVER_COPY_INVALID",
+            )
+        unknown = [name for name in variables if name not in character_names]
+        if unknown:
+            raise AppError(
+                502,
+                f"封面画面建议引用了未登记角色：{'、'.join(unknown)}",
+                "COVER_COPY_INVALID",
+            )
+        main_count = _count_chinese_chars(option.narration_main)
+        if main_count == 0 or main_count > 12:
+            raise AppError(
+                502,
+                f"封面主标题「{option.narration_main}」为 {main_count} 字，要求 1–12 字",
+                "COVER_COPY_INVALID",
+            )
+        sub_count = _count_chinese_chars(option.narration_sub)
+        if sub_count == 0 or sub_count >= 35:
+            raise AppError(
+                502,
+                f"封面副标题「{option.narration_sub}」为 {sub_count} 字，要求 <35 字",
+                "COVER_COPY_INVALID",
+            )
+        highlight = option.narration_highlight
+        if not highlight:
+            raise AppError(
+                502, "封面文案方案缺少标红词，请重试", "COVER_COPY_INVALID"
+            )
+        if (
+            highlight not in option.narration_main
+            and highlight not in option.narration_sub
+        ):
+            raise AppError(
+                502,
+                f"标红词「{highlight}」不在对应方案的主标题或副标题中",
+                "COVER_COPY_INVALID",
+            )
+        if option.narration_main in mains:
+            raise AppError(
+                502, "封面文案方案的主标题重复，请重试", "COVER_COPY_INVALID"
+            )
+        mains.add(option.narration_main)
+
+    recommended = [option for option in options if option.recommended]
+    if len(recommended) != 1:
+        for option in options:
+            option.recommended = False
+        options[0].recommended = True
+    for option in options:
+        if option.recommended and not option.recommend_reason:
+            option.recommend_reason = "更贴近本章最强钩子"
+    return options
+
+
+def _parse_cover_copy_response(
+    response: httpx.Response,
+    character_names: list[str],
+) -> list[CoverCopyOption]:
+    """解析封面文案方案 JSON；格式问题统一标记为可重试错误。"""
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise AppError(
+            502, "DeepSeek 返回了无法解析的响应，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+    try:
+        choice = data["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        text = choice["message"]["content"]
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        raise AppError(
+            502, "DeepSeek 返回内容为空，请重试", "DEEPSEEK_BAD_OUTPUT"
+        ) from exc
+    if finish_reason == "length":
+        raise AppError(
+            502, "封面文案生成被截断，请重试", "DEEPSEEK_BAD_OUTPUT"
+        )
+    if not isinstance(text, str) or not text.strip():
+        raise AppError(
+            502, "DeepSeek 返回内容为空，请重试", "DEEPSEEK_BAD_OUTPUT"
+        )
+
+    payload = _load_json_object(text, label="封面文案")
+    try:
+        parsed = CoverCopyOptionsPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise AppError(
+            502,
+            "DeepSeek 返回的封面文案格式不正确，请重试",
+            "DEEPSEEK_BAD_OUTPUT",
+        ) from exc
+    return _validate_cover_copy_options(parsed, character_names)
+
+
+def generate_cover_copy_options(
+    api_key: str,
+    *,
+    story_name: str,
+    chapter_title: str,
+    chapter_text: str,
+    previous_chapter_title: str | None,
+    next_chapter_title: str | None,
+    character_names: list[str],
+    post_title: str | None,
+    post_content: str,
+    cover_label: str,
+    cover_main: str,
+    cover_highlight: str,
+    cover_sub: str,
+    direction: str,
+) -> list[CoverCopyOption]:
+    """根据本章原文、前后章和已有发文标题生成 3 个封面文案方案。"""
+    context = (
+        "\n【本章输入】\n"
+        f"- 故事名：{story_name or '未命名'}\n"
+        f"- 本章：{chapter_title or '未命名'}\n"
+        f"- 上一章：{previous_chapter_title or '无'}\n"
+        f"- 下一章：{next_chapter_title or '无'}\n"
+        f"- 已登记角色名：{'、'.join(character_names) or '无'}\n"
+        f"- 本章已有发文标题：{post_title or '无'}\n"
+        f"- 本章已有发文正文（只用于对齐钩子，不要照抄）：\n{post_content[:2000] or '无'}\n"
+        f"- 当前封面文字：\n"
+        f"  顶部小字：{cover_label or '无'}\n"
+        f"  主标题：{cover_main or '无'}\n"
+        f"  标红词：{cover_highlight or '无'}\n"
+        f"  副标题：{cover_sub or '无'}\n"
+        f"\n【本章原文】\n{chapter_text[:8000]}\n"
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": CHAPTER_COVER_COPY_SYSTEM_PROMPT + context,
+        },
+        {
+            "role": "user",
+            "content": direction
+            or "请按规则生成本章封面的 3 个文案方案，只输出 JSON。",
+        },
+    ]
+    last_error: AppError | None = None
+    for attempt in range(2):
+        try:
+            response = _send_request(
+                api_key,
+                messages,
+                max_tokens=CHAPTER_COVER_COPY_MAX_TOKENS,
+                temperature=0.8,
+            )
+            return _parse_cover_copy_response(response, character_names)
+        except AppError as exc:
+            if (
+                exc.code in {"DEEPSEEK_BAD_OUTPUT", "COVER_COPY_INVALID"}
+                and attempt == 0
+            ):
+                logger.warning("封面文案方案生成失败，重试一次：%s", exc.message)
+                last_error = exc
+                continue
+            raise
+    raise last_error or AppError(
+        502, "封面文案生成失败，请重试", "DEEPSEEK_BAD_OUTPUT"
+    )
+
+
 def _load_json_object(text: str, label: str = "文案") -> dict:
     """容忍 Markdown 围栏和前后杂质，提取 JSON 对象。"""
     cleaned = text.strip()
@@ -619,17 +817,21 @@ def _load_json_object(text: str, label: str = "文案") -> dict:
 
 def _normalize_copy_options(
     options: list[GeneratedCopyOption],
+    zhihu_alias: str | None = None,
 ) -> list[GeneratedCopyOption]:
     """清洗方案文本，并保证前端始终能拿到「有且只有一个」推荐方案。
 
     模型偶尔会漏标或标多个 recommended。这里不把它当成格式错误整次失败，
     而是统一保留第一个方案为推荐，保住用户已经付费换来的 3 份文案。
+    有最终别名时，每个方案正文都统一补上【别名】，避免预览里漏别名。
     """
     for option in options:
         option.style = option.style.strip()
         option.feature = option.feature.strip()
         option.title = option.title.strip()
         option.content = option.content.strip()
+        if zhihu_alias:
+            option.content = apply_alias_prefix(option.content, zhihu_alias)
         option.recommend_reason = option.recommend_reason.strip()
 
     if any(
@@ -651,7 +853,9 @@ def _normalize_copy_options(
     return options
 
 
-def _parse_response(response: httpx.Response) -> list[GeneratedCopyOption]:
+def _parse_response(
+    response: httpx.Response, zhihu_alias: str | None = None
+) -> list[GeneratedCopyOption]:
     """解析并校验模型输出；任何格式问题统一标记为 DEEPSEEK_BAD_OUTPUT。"""
     try:
         data = response.json()
@@ -686,7 +890,7 @@ def _parse_response(response: httpx.Response) -> list[GeneratedCopyOption]:
             502, "DeepSeek 返回的文案格式不正确，请重试", "DEEPSEEK_BAD_OUTPUT"
         ) from exc
 
-    return _normalize_copy_options(parsed.options)
+    return _normalize_copy_options(parsed.options, zhihu_alias)
 
 
 def generate_copy(
@@ -719,7 +923,7 @@ def generate_copy(
     for attempt in range(2):
         try:
             response = _send_request(api_key, messages)
-            return _parse_response(response)
+            return _parse_response(response, zhihu_alias)
         except AppError as exc:
             if exc.code == "DEEPSEEK_BAD_OUTPUT" and attempt == 0:
                 logger.warning("DeepSeek 输出解析失败，重试一次：%s", exc.message)
@@ -977,7 +1181,7 @@ def _parse_alias_response(response: httpx.Response) -> list[str]:
 
 
 def generate_zhihu_aliases(api_key: str, title: str) -> list[str]:
-    """根据知乎原文标题生成候选别名；格式问题重试一次。"""
+    """根据知乎原文标题生成候选别名；格式或长度问题追加纠正后重试一次。"""
     messages = [
         {"role": "system", "content": ZHIHU_ALIAS_SYSTEM_PROMPT},
         {
@@ -994,15 +1198,65 @@ def generate_zhihu_aliases(api_key: str, title: str) -> list[str]:
                 max_tokens=ZHIHU_ALIAS_MAX_TOKENS,
                 temperature=0.9,
             )
-            return _parse_alias_response(response)
+            aliases = _parse_alias_response(response)
         except AppError as exc:
             if exc.code == "DEEPSEEK_BAD_OUTPUT" and attempt == 0:
                 logger.warning(
                     "DeepSeek 别名输出解析失败，重试一次：%s", exc.message
                 )
                 last_error = exc
+                messages = messages + [
+                    {
+                        "role": "assistant",
+                        "content": "上一次输出无法解析为约定的 JSON。",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一次输出不是合法 JSON，或缺少 aliases 数组。"
+                            "请严格只输出 {\"aliases\": [...]}，"
+                            "并确保每个别名是 6–8 个汉字。"
+                        ),
+                    },
+                ]
                 continue
             raise
+
+        valid = [
+            alias.strip()
+            for alias in aliases
+            if ALIAS_PATTERN.fullmatch(alias.strip())
+        ]
+        if valid:
+            return valid
+
+        lengths = [len(alias.strip()) for alias in aliases]
+        last_error = AppError(
+            502,
+            "DeepSeek 返回的别名不是 6–8 个汉字，请重试",
+            "DEEPSEEK_BAD_OUTPUT",
+        )
+        if attempt == 0:
+            logger.warning("DeepSeek 别名长度不合规，纠正后重试：%s", lengths)
+            messages = messages + [
+                {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        {"aliases": aliases}, ensure_ascii=False
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "上一次返回的别名不符合长度要求。每个别名必须是 "
+                        "6、7 或 8 个汉字，不能是 5 个或更少；"
+                        "请逐个数一遍后重新生成 6 个别名。"
+                        "仍然只输出 {\"aliases\": [...]}，不要解释。"
+                    ),
+                },
+            ]
+            continue
+        raise last_error
 
     raise last_error or AppError(
         502, "DeepSeek 返回内容异常，请重试", "DEEPSEEK_BAD_OUTPUT"

@@ -36,6 +36,8 @@ def image_file_exists(upload_dir: Path, url: str | None) -> bool:
     """把 /uploads/... 访问地址还原成上传目录下的本地文件。"""
     if not url:
         return True
+    # 章节资源 URL 带 ?v= 缓存版本；文件检查只看问号前的部分。
+    url = url.split("?", 1)[0]
     if not url.startswith("/uploads/"):
         return False
     relative = unquote(url[len("/uploads/") :])

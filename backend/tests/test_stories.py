@@ -277,3 +277,27 @@ def test_story_art_style_deleted_becomes_dangling(client):
     assert got["art_style_id"] == "style-a"
     assert got["art_style_name"] is None
     assert got["art_style_content"] is None
+
+
+def test_story_list_sorted_by_created_at_not_updated_at(client):
+    """编辑旧故事只改 updated_at，不得把故事顶到列表最前。"""
+    first = client.post(
+        "/api/stories", json={"name": "先创建", "content": "A"}
+    ).json()
+    second = client.post(
+        "/api/stories", json={"name": "后创建", "content": "B"}
+    ).json()
+
+    updated = client.put(
+        f"/api/stories/{first['id']}",
+        json={
+            "name": "先创建（已编辑）",
+            "content": "A",
+            "cover_filename": None,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+
+    listing = client.get("/api/stories").json()
+    assert [item["id"] for item in listing] == [second["id"], first["id"]]
+    assert listing[0]["name"] == "后创建"

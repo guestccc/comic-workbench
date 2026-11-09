@@ -30,6 +30,66 @@ def test_post_crud_and_filters(client, story):
     assert client.get(f"/api/posts/{post['id']}").status_code == 404
 
 
+def test_post_content_gets_final_alias_prefix(client, story):
+    alias = client.patch(
+        f"/api/stories/{story['id']}/zhihu",
+        json={
+            "zhihu_article_id": "2097048289950676083",
+            "zhihu_alias": "橘子汽水很甜",
+        },
+    )
+    assert alias.status_code == 200, alias.text
+
+    created = client.post(
+        "/api/posts",
+        json={"story_id": story["id"], "title": "标题", "content": "正文一。"},
+    )
+    assert created.status_code == 201, created.text
+    post = created.json()
+    assert post["content"] == "【橘子汽水很甜】\n正文一。"
+
+    patched = client.patch(
+        f"/api/posts/{post['id']}", json={"content": "正文二。"}
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["content"] == "【橘子汽水很甜】\n正文二。"
+
+    again = client.post(
+        "/api/posts",
+        json={
+            "story_id": story["id"],
+            "title": "标题2",
+            "content": "【橘子汽水很甜】\n正文三。",
+        },
+    )
+    assert again.status_code == 201, again.text
+    assert again.json()["content"] == "【橘子汽水很甜】\n正文三。"
+
+
+def test_alias_change_syncs_post_prefix(client, story):
+    first = client.patch(
+        f"/api/stories/{story['id']}/zhihu",
+        json={
+            "zhihu_article_id": "2097048289950676083",
+            "zhihu_alias": "橘子汽水很甜",
+        },
+    )
+    assert first.status_code == 200, first.text
+    post = client.post(
+        "/api/posts",
+        json={"story_id": story["id"], "title": "标题", "content": "正文。"},
+    ).json()
+    assert post["content"].startswith("【橘子汽水很甜】\n")
+
+    second = client.patch(
+        f"/api/stories/{story['id']}/zhihu",
+        json={"zhihu_alias": "行李箱藏枪记"},
+    )
+    assert second.status_code == 200, second.text
+    updated = client.get(f"/api/posts/{post['id']}").json()
+    assert updated["content"] == "【行李箱藏枪记】\n正文。"
+
+
 def test_invalid_status_rejected(client, story):
     response = client.post(
         "/api/posts",

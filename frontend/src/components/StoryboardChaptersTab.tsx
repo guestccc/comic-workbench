@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   App,
@@ -10,21 +10,34 @@ import {
   Modal,
   Space,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import {
+  CloudUploadOutlined,
   CopyOutlined,
   DownloadOutlined,
   DownOutlined,
   EditOutlined,
+  HistoryOutlined,
+  PictureOutlined,
   ReloadOutlined,
+  RobotOutlined,
   ThunderboltOutlined,
   UpOutlined,
 } from '@ant-design/icons'
 import ImageUpload from './ImageUpload'
+import ImageGenerationModal from './ImageGenerationModal'
 import ChapterCoverOptimizerModal from './ChapterCoverOptimizerModal'
+import CoverCopyOptionsModal from './CoverCopyOptionsModal'
+import PromptSnapshotDrawer from './PromptSnapshotDrawer'
+import ChapterAssetHistoryDrawer from './ChapterAssetHistoryDrawer'
+import AliasStampModal from './AliasStampModal'
 import { api, getErrorMessage } from '../api/client'
 import type {
+  ImageGenerationItem,
+  ImageGenerationPreview,
+  MappingReview,
   Story,
   StoryboardChapter,
   StoryboardChapterRead,
@@ -32,17 +45,21 @@ import type {
   StoryBreakdown,
 } from '../types'
 import { copyText } from '../utils/clipboard'
+import { buildImageIngestInstruction } from '../utils/imageIngest'
 import {
   buildChapterCoverInstructionPrompt,
   buildChapterGuideInstructionPrompt,
   buildChapterPageTargets,
   buildChapterPlanPrompt,
   buildChapterScriptPrompt,
+  buildCharacterCardsPrompt,
 } from '../utils/storyBreakdown'
 
 interface StoryboardChaptersTabProps {
   story: Story
   breakdown: StoryBreakdown | null
+  /** 是否已配置生图服务 */
+  imageEnabled: boolean
   onRefresh: () => Promise<void>
 }
 
@@ -92,6 +109,7 @@ function downloadUrl(url: string) {
 export default function StoryboardChaptersTab({
   story,
   breakdown,
+  imageEnabled,
   onRefresh,
 }: StoryboardChaptersTabProps) {
   const { message, modal } = App.useApp()
@@ -99,9 +117,35 @@ export default function StoryboardChaptersTab({
   const [editing, setEditing] = useState<StoryboardChapterRead | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [mappingReview, setMappingReview] = useState<MappingReview | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
+
+  // 分镜对照还有未处理的审阅草稿时，不允许生成正文脚本
+  useEffect(() => {
+    let active = true
+    api
+      .getMappingReview(story.id)
+      .then((review) => {
+        if (active) setMappingReview(review)
+      })
+      .catch(() => {
+        if (active) setMappingReview(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [story.id, breakdown?.mapping])
+
+  const mappingDraft = mappingReview?.status === 'draft'
+  const charactersReady = (breakdown?.characters.length ?? 0) > 0
+
   // 章节默认折叠，标题栏保留进度标签；需要操作时再展开对应章节
   const [activeChapterKeys, setActiveChapterKeys] = useState<string[]>([])
+  const [promptHistoryChapter, setPromptHistoryChapter] = useState<StoryboardChapterRead | null>(null)
+  const [assetHistory, setAssetHistory] = useState<{
+    chapter: StoryboardChapterRead
+    kind: 'cover' | 'guide'
+  } | null>(null)
   const [coverOptimizerOpen, setCoverOptimizerOpen] = useState(false)
   const [coverOptimizerValues, setCoverOptimizerValues] = useState<{
     chapterTitle: string
@@ -111,6 +155,29 @@ export default function StoryboardChaptersTab({
     coverHighlight: string
     imagePrompt: string
   } | null>(null)
+  const [coverCopyOpen, setCoverCopyOpen] = useState(false)
+  const [coverCopyValues, setCoverCopyValues] = useState<{
+    chapterTitle: string
+    coverLabel: string
+    coverMain: string
+    coverHighlight: string
+    coverSub: string
+  } | null>(null)
+
+  // 生图对比弹窗：章节封面
+  const [generationChapter, setGenerationChapter] =
+    useState<StoryboardChapterRead | null>(null)
+  const [generationOpen, setGenerationOpen] = useState(false)
+  const [generationLoading, setGenerationLoading] = useState(false)
+  const [generationPreview, setGenerationPreview] =
+    useState<ImageGenerationPreview | null>(null)
+  const [generationHistory, setGenerationHistory] = useState<
+    ImageGenerationItem[]
+  >([])
+  const [generationBytes, setGenerationBytes] = useState(0)
+  const [generationUsing, setGenerationUsing] = useState(false)
+  const [aliasOpen, setAliasOpen] = useState(false)
+  const [aliasChapters, setAliasChapters] = useState<number[]>([])
 
   const chapters = breakdown?.chapters ?? []
   const pages = breakdown?.pages ?? []
@@ -125,7 +192,15 @@ export default function StoryboardChaptersTab({
   const hasAnyImages = chapters.some((chapter) =>
     chapterHasImages(chapter, pages),
   )
-
+  const aliasImageCount =
+    pages.filter((page) => page.image_url).length +
+    chapters.reduce(
+      (sum, chapter) =>
+        sum +
+        (chapter.cover.image_url ? 1 : 0) +
+        (chapter.guide.image_url ? 1 : 0),
+      0,
+    )
   const pageByChapter = useMemo(() => {
     const chapterByMapping = new Map<number, number>()
     for (const chapter of chapters) {
@@ -148,6 +223,21 @@ export default function StoryboardChaptersTab({
     return result
   }, [pages, chapters])
 
+  const aliasChapterOptions = chapters.map((chapter) => {
+    const chapterPages = pageByChapter.get(chapter.chapter_number)
+    const count =
+      (chapter.cover.image_url ? 1 : 0) +
+      (chapter.guide.image_url ? 1 : 0) +
+      (chapterPages
+        ? [...chapterPages.values()].filter((page) => page.image_url).length
+        : 0)
+    return {
+      value: chapter.chapter_number,
+      label: `第${chapter.chapter_number}章 ${chapter.title}`,
+      count,
+    }
+  })
+
   const copy = async (text: string, success: string) => {
     try {
       await copyText(text)
@@ -155,6 +245,23 @@ export default function StoryboardChaptersTab({
     } catch {
       message.error('复制失败，请手动选中后复制')
     }
+  }
+
+  /** 复制章节封面/引导卡的回传指令。 */
+  const handleCopyAssetIngest = (
+    chapter: StoryboardChapterRead,
+    target: 'cover' | 'guide',
+  ) => {
+    void copy(
+      buildImageIngestInstruction({
+        storyId: story.id,
+        storyName: story.name,
+        target,
+        chapterNumber: chapter.chapter_number,
+        chapterTitle: chapter.title,
+      }),
+      target === 'cover' ? '封面回传指令已复制' : '引导卡回传指令已复制',
+    )
   }
 
   const handleCopyPlan = () => {
@@ -194,6 +301,10 @@ export default function StoryboardChaptersTab({
     chapter: StoryboardChapterRead,
     force: boolean,
   ) => {
+    if (!charactersReady) {
+      message.warning('还没有角色卡，请先到「角色设定卡」复制角色卡指令并拆完角色')
+      return
+    }
     const run = () =>
       void copy(
         buildChapterScriptPrompt(
@@ -221,7 +332,103 @@ export default function StoryboardChaptersTab({
     run()
   }
 
+  const loadGenerationHistory = async (chapter: StoryboardChapterRead) => {
+    try {
+      const data = await api.listImageGenerations(story.id, {
+        targetType: 'chapter_cover',
+        chapterNumber: chapter.chapter_number,
+      })
+      setGenerationHistory(data.items)
+      setGenerationBytes(data.total_bytes)
+    } catch (error) {
+      message.error(getErrorMessage(error))
+    }
+  }
+
+  const startGeneration = async (chapter: StoryboardChapterRead) => {
+    setGenerationChapter(chapter)
+    setGenerationOpen(true)
+    setGenerationLoading(true)
+    setGenerationPreview(null)
+    setGenerationHistory([])
+    setGenerationBytes(0)
+    try {
+      const preview = await api.generateChapterCover(
+        story.id,
+        chapter.chapter_number,
+      )
+      setGenerationPreview(preview)
+    } catch (error) {
+      message.error(getErrorMessage(error))
+    } finally {
+      setGenerationLoading(false)
+      void loadGenerationHistory(chapter)
+    }
+  }
+
+  const confirmGenerateCover = (chapter: StoryboardChapterRead) => {
+    if (!chapter.cover.image_prompt.trim()) {
+      message.warning('本章还没有封面生图提示词，请先生成或填写提示词')
+      return
+    }
+    modal.confirm({
+      title: '立即生成章节封面？',
+      content: `将用本章封面提示词和角色资产图生成 1 张封面，消耗一次生图额度。缺少资产图的角色会先被拦下。`,
+      okText: '开始生成',
+      cancelText: '取消',
+      onOk: () => startGeneration(chapter),
+    })
+  }
+
+  const openGenerationHistory = (chapter: StoryboardChapterRead) => {
+    setGenerationChapter(chapter)
+    setGenerationOpen(true)
+    setGenerationPreview(null)
+    setGenerationLoading(false)
+    void loadGenerationHistory(chapter)
+  }
+
+  const handleUseGeneration = async (generationId: string) => {
+    setGenerationUsing(true)
+    try {
+      await api.useImageGeneration(story.id, generationId)
+      await onRefresh()
+      setGenerationOpen(false)
+      message.success('已使用这张章节封面')
+    } catch (error) {
+      message.error(getErrorMessage(error))
+    } finally {
+      setGenerationUsing(false)
+    }
+  }
+
+  const handleClearGenerationHistory = async () => {
+    if (!generationChapter) return
+    try {
+      const result = await api.clearImageGenerations(story.id, {
+        targetType: 'chapter_cover',
+        chapterNumber: generationChapter.chapter_number,
+      })
+      setGenerationHistory([])
+      setGenerationBytes(0)
+      message.success(`已清除 ${result.deleted} 张历史图片`)
+    } catch (error) {
+      message.error(getErrorMessage(error))
+    }
+  }
+
+  const handleCopyCharacterCardsInstruction = () => {
+    void copy(
+      buildCharacterCardsPrompt(story.id),
+      '角色卡指令已复制，运行后刷新查看角色卡',
+    )
+  }
+
   const handleCopyCoverInstruction = (chapter: StoryboardChapterRead) => {
+    if (!charactersReady) {
+      message.warning('还没有角色卡，请先到「角色设定卡」复制角色卡指令并拆完角色')
+      return
+    }
     void copy(
       buildChapterCoverInstructionPrompt(
         story.id,
@@ -233,6 +440,10 @@ export default function StoryboardChaptersTab({
   }
 
   const handleCopyGuideInstruction = (chapter: StoryboardChapterRead) => {
+    if (!charactersReady) {
+      message.warning('还没有角色卡，请先到「角色设定卡」复制角色卡指令并拆完角色')
+      return
+    }
     void copy(
       buildChapterGuideInstructionPrompt(
         story.id,
@@ -329,6 +540,19 @@ export default function StoryboardChaptersTab({
     setCoverOptimizerOpen(true)
   }
 
+  /** 封面文案方案也使用点击时的表单快照，避免未保存的修改丢失。 */
+  const openCoverCopyOptions = () => {
+    const values = form.getFieldsValue()
+    setCoverCopyValues({
+      chapterTitle: values.title ?? '',
+      coverLabel: values.cover_label ?? '',
+      coverMain: values.cover_main ?? '',
+      coverHighlight: values.cover_highlight ?? '',
+      coverSub: values.cover_sub ?? '',
+    })
+    setCoverCopyOpen(true)
+  }
+
   const saveChapter = async () => {
     if (!editing) return
     let values: ChapterEditValues
@@ -402,22 +626,48 @@ export default function StoryboardChaptersTab({
 
   if (chapters.length === 0) {
     return (
-      <Empty description="还没有章节规划">
-        <Space direction="vertical" size={10} align="center">
-          <Typography.Text type="secondary">
-            一章 = 一篇小红书笔记：1 张封面 + 1–16 张正文 + 1 张引导卡，
-            合计最多 18 张。先让 Claude 按剧情钩子拆章。
-          </Typography.Text>
-          <Button
-            type="primary"
-            icon={<CopyOutlined />}
-            onClick={handleCopyPlan}
-            disabled={!breakdown.mapping.length}
-          >
-            复制章节规划指令
-          </Button>
-        </Space>
-      </Empty>
+      <>
+        <Empty description="还没有章节规划">
+          <Space direction="vertical" size={10} align="center">
+            <Typography.Text type="secondary">
+              一章 = 一篇小红书笔记：1 张封面 + 1–16 张正文 + 1 张引导卡，
+              合计最多 18 张。先让 Claude 按剧情钩子拆章。
+            </Typography.Text>
+            <Space wrap>
+              <Button
+                type="primary"
+                icon={<CopyOutlined />}
+                onClick={handleCopyPlan}
+                disabled={!breakdown.mapping.length}
+              >
+                复制章节规划指令
+              </Button>
+              <Button
+                icon={<EditOutlined />}
+                disabled={aliasImageCount === 0}
+                onClick={() => {
+                  setAliasChapters([])
+                  setAliasOpen(true)
+                }}
+              >
+                给正文页批量加别名（{aliasImageCount} 张）
+              </Button>
+            </Space>
+          </Space>
+        </Empty>
+        <AliasStampModal
+          open={aliasOpen}
+          storyId={story.id}
+          defaultAlias={story.zhihu_alias}
+          defaultChapterNumbers={[]}
+          imageCount={aliasImageCount}
+          onClose={() => {
+            setAliasOpen(false)
+            setAliasChapters([])
+          }}
+          onDone={onRefresh}
+        />
+      </>
     )
   }
 
@@ -430,6 +680,32 @@ export default function StoryboardChaptersTab({
           message={`共 ${chapters.length} 章 · 正文档 ${generatedContentPages}/${totalContentPages}`}
           description="每章 1 封面 + 最多 16 正文 + 1 引导卡 = 最多 18 张；正文按章生成，封面和引导卡单独生成。"
         />
+        {mappingDraft && (
+          <Alert
+            type="warning"
+            showIcon
+            message="分镜对照还有未处理的审阅变更"
+            description="请先到「分镜对照 → 审阅对照」逐条处理并应用，再生成正文脚本。"
+          />
+        )}
+        {!charactersReady && (
+          <Alert
+            type="warning"
+            showIcon
+            message="还没有角色卡"
+            description="角色卡是生图变量的唯一来源。先拆完全部角色并写回，再生成正文、封面和引导卡。"
+            action={
+              <Button
+                size="small"
+                type="primary"
+                icon={<RobotOutlined />}
+                onClick={handleCopyCharacterCardsInstruction}
+              >
+                复制角色卡指令
+              </Button>
+            }
+          />
+        )}
         <Space wrap size={8}>
           <Button
             icon={<DownOutlined />}
@@ -452,6 +728,16 @@ export default function StoryboardChaptersTab({
             }
           >
             导出全部章节图片
+          </Button>
+          <Button
+            icon={<EditOutlined />}
+            disabled={!hasAnyImages}
+            onClick={() => {
+              setAliasChapters([])
+              setAliasOpen(true)
+            }}
+          >
+            批量加别名
           </Button>
           <Button icon={<CopyOutlined />} onClick={handleCopyPlan}>
             重新规划章节
@@ -489,6 +775,13 @@ export default function StoryboardChaptersTab({
                 )
               })
             const totalImages = targets.length + 2
+            const chapterImageCount =
+              (chapter.cover.image_url ? 1 : 0) +
+              (chapter.guide.image_url ? 1 : 0) +
+              (chapterPages
+                ? [...chapterPages.values()].filter((page) => page.image_url)
+                    .length
+                : 0)
             const coverBusy =
               busyKey === `${chapter.chapter_number}-cover`
             const guideBusy =
@@ -514,6 +807,18 @@ export default function StoryboardChaptersTab({
               ),
               extra: (
                 <Space size={8}>
+                  <Button
+                    size="small"
+                    icon={<EditOutlined />}
+                    disabled={chapterImageCount === 0}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setAliasChapters([chapter.chapter_number])
+                      setAliasOpen(true)
+                    }}
+                  >
+                    本章加别名
+                  </Button>
                   <Button
                     size="small"
                     icon={<DownloadOutlined />}
@@ -584,9 +889,52 @@ export default function StoryboardChaptersTab({
                         <Button
                           size="small"
                           icon={<CopyOutlined />}
+                          disabled={!charactersReady}
                           onClick={() => handleCopyCoverInstruction(chapter)}
                         >
                           复制封面生成指令
+                        </Button>
+                        <Tooltip
+                          title={
+                            imageEnabled
+                              ? undefined
+                              : '请先在「设置」页配置生图服务'
+                          }
+                        >
+                          <Button
+                            size="small"
+                            icon={<PictureOutlined />}
+                            disabled={
+                              !imageEnabled ||
+                              !chapter.cover.image_prompt.trim()
+                            }
+                            onClick={() => confirmGenerateCover(chapter)}
+                          >
+                            立即生图
+                          </Button>
+                        </Tooltip>
+                        <Button
+                          size="small"
+                          icon={<HistoryOutlined />}
+                          onClick={() => openGenerationHistory(chapter)}
+                        >
+                          历史
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<HistoryOutlined />}
+                          onClick={() => setPromptHistoryChapter(chapter)}
+                        >
+                          提示词历史
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<HistoryOutlined />}
+                          onClick={() =>
+                            setAssetHistory({ chapter, kind: 'cover' })
+                          }
+                        >
+                          成品图历史
                         </Button>
                         <Button
                           size="small"
@@ -599,6 +947,15 @@ export default function StoryboardChaptersTab({
                           }
                         >
                           复制封面提示词
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<CloudUploadOutlined />}
+                          onClick={() =>
+                            handleCopyAssetIngest(chapter, 'cover')
+                          }
+                        >
+                          复制回传指令
                         </Button>
                       </Space>
                       {chapter.cover.image_prompt && (
@@ -649,6 +1006,7 @@ export default function StoryboardChaptersTab({
                         <Button
                           size="small"
                           icon={<CopyOutlined />}
+                          disabled={!charactersReady}
                           onClick={() => handleCopyGuideInstruction(chapter)}
                         >
                           复制引导卡生成指令
@@ -664,6 +1022,24 @@ export default function StoryboardChaptersTab({
                           }
                         >
                           复制引导卡提示词
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<CloudUploadOutlined />}
+                          onClick={() =>
+                            handleCopyAssetIngest(chapter, 'guide')
+                          }
+                        >
+                          复制回传指令
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<HistoryOutlined />}
+                          onClick={() =>
+                            setAssetHistory({ chapter, kind: 'guide' })
+                          }
+                        >
+                          成品图历史
                         </Button>
                       </Space>
                       {chapter.guide.image_prompt && (
@@ -727,6 +1103,8 @@ export default function StoryboardChaptersTab({
                         type="primary"
                         icon={<CopyOutlined />}
                         disabled={
+                          mappingDraft ||
+                          !charactersReady ||
                           missing.length === 0 ||
                           previousIncomplete.length > 0
                         }
@@ -739,10 +1117,24 @@ export default function StoryboardChaptersTab({
                       <Button
                         danger
                         icon={<ReloadOutlined />}
-                        disabled={previousIncomplete.length > 0}
+                        disabled={
+                          mappingDraft ||
+                          !charactersReady ||
+                          previousIncomplete.length > 0
+                        }
                         onClick={() => handleCopyChapterScript(chapter, true)}
                       >
                         重新生成本章全部正文
+                      </Button>
+                      <Button
+                        icon={<EditOutlined />}
+                        disabled={chapterImageCount === 0}
+                        onClick={() => {
+                          setAliasChapters([chapter.chapter_number])
+                          setAliasOpen(true)
+                        }}
+                      >
+                        本章加别名（{chapterImageCount} 张）
                       </Button>
                     </Space>
                   </div>
@@ -781,6 +1173,17 @@ export default function StoryboardChaptersTab({
           </Form.Item>
 
           <Typography.Title level={5}>封面文字</Typography.Title>
+          <Space wrap style={{ marginBottom: 8 }}>
+            <Button
+              icon={<ThunderboltOutlined />}
+              onClick={openCoverCopyOptions}
+            >
+              AI 生成封面文案（3 选 1）
+            </Button>
+            <Typography.Text type="secondary">
+              从本章最强钩子生成主标题/副标题，选定后回填；保存后再复制封面生成指令。
+            </Typography.Text>
+          </Space>
           <Form.Item name="cover_label" label="顶部小字">
             <Input maxLength={100} placeholder="第1章 · 如果一切能重来" />
           </Form.Item>
@@ -812,7 +1215,7 @@ export default function StoryboardChaptersTab({
                   icon={<ThunderboltOutlined />}
                   onClick={openCoverOptimizer}
                 >
-                  AI 优化
+                  AI 优化画面提示词
                 </Button>
               </Space>
             }
@@ -863,6 +1266,83 @@ export default function StoryboardChaptersTab({
           })
         }}
       />
+
+      <CoverCopyOptionsModal
+        open={coverCopyOpen}
+        storyId={story.id}
+        chapterNumber={editing?.chapter_number ?? 0}
+        chapterTitle={
+          coverCopyValues?.chapterTitle ?? editing?.title ?? ''
+        }
+        coverLabel={coverCopyValues?.coverLabel ?? ''}
+        coverMain={coverCopyValues?.coverMain ?? ''}
+        coverHighlight={coverCopyValues?.coverHighlight ?? ''}
+        coverSub={coverCopyValues?.coverSub ?? ''}
+        onClose={() => setCoverCopyOpen(false)}
+        onApply={(option) => {
+          form.setFieldsValue({
+            cover_main: option.narration_main,
+            cover_highlight: option.narration_highlight,
+            cover_sub: option.narration_sub,
+            cover_prompt: option.image_prompt,
+          })
+        }}
+      />
+
+      <ImageGenerationModal
+        open={generationOpen}
+        title={
+          generationChapter
+            ? `章节封面 · 第${generationChapter.chapter_number}章 ${generationChapter.title}`
+            : '章节封面'
+        }
+        loading={generationLoading}
+        preview={generationPreview}
+        history={generationHistory}
+        historyBytes={generationBytes}
+        using={generationUsing}
+        onUse={handleUseGeneration}
+        onRegenerate={() => {
+          if (generationChapter) void startGeneration(generationChapter)
+        }}
+        onClose={() => {
+          setGenerationOpen(false)
+          setGenerationChapter(null)
+          setGenerationPreview(null)
+        }}
+        onClearHistory={handleClearGenerationHistory}
+      />
+
+      <AliasStampModal
+        open={aliasOpen}
+        storyId={story.id}
+        defaultAlias={story.zhihu_alias}
+        chapterOptions={aliasChapterOptions}
+        defaultChapterNumbers={aliasChapters}
+        imageCount={aliasImageCount}
+        onClose={() => {
+          setAliasOpen(false)
+          setAliasChapters([])
+        }}
+        onDone={onRefresh}
+      />
+      <ChapterAssetHistoryDrawer
+        open={Boolean(assetHistory)}
+        storyId={story.id}
+        chapterNumber={assetHistory?.chapter.chapter_number ?? 0}
+        kind={assetHistory?.kind ?? 'cover'}
+        onClose={() => setAssetHistory(null)}
+        onRestored={() => void onRefresh()}
+      />
+      <PromptSnapshotDrawer
+        open={Boolean(promptHistoryChapter)}
+        storyId={story.id}
+        targetType="cover"
+        chapterNumber={promptHistoryChapter?.chapter_number}
+        onClose={() => setPromptHistoryChapter(null)}
+        onRestored={() => void onRefresh()}
+      />
+
     </div>
   )
 }

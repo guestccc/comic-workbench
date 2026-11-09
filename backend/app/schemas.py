@@ -23,6 +23,7 @@ from .config import (
     MAX_ART_STYLE_CONTENT_LENGTH,
     MAX_ART_STYLE_ID_LENGTH,
     MAX_ART_STYLE_NAME_LENGTH,
+    MAX_BATCH_INGEST_ITEMS,
     MAX_BREAKDOWN_CONTENT_LENGTH,
     MAX_BREAKDOWN_PAGES,
     MAX_CHARACTER_APPEARANCE_LENGTH,
@@ -36,6 +37,15 @@ from .config import (
     MAX_CHAPTER_GUIDE_TEXT_LENGTH,
     MAX_CHAPTER_LABEL_LENGTH,
     MAX_CHAPTER_TITLE_LENGTH,
+    MAX_DESIGN_FEEDBACK_APPLICATIONS,
+    MAX_DESIGN_FEEDBACK_CONTENT_LENGTH,
+    MAX_DESIGN_FEEDBACK_IMAGE_URL_LENGTH,
+    MAX_DESIGN_FEEDBACK_PROMPT_LENGTH,
+    MAX_DESIGN_FEEDBACK_SOURCE_URL_LENGTH,
+    MAX_DESIGN_FEEDBACK_SUMMARY_LENGTH,
+    MAX_DESIGN_FEEDBACK_TAG_LENGTH,
+    MAX_DESIGN_FEEDBACK_TAGS,
+    MAX_DESIGN_FEEDBACK_TITLE_LENGTH,
     MAX_COPY_OPTION_FEATURE_LENGTH,
     MAX_COPY_OPTION_REASON_LENGTH,
     MAX_COPY_OPTION_STYLE_LENGTH,
@@ -58,6 +68,7 @@ from .config import (
     MAX_POST_TITLE_LENGTH,
     MAX_PROMPT_LENGTH,
     MAX_PROMPT_OPTIMIZE_MESSAGES,
+    MAX_PROMPT_TEMPLATE_LENGTH,
     MAX_PROMPT_OPTIMIZE_TOTAL_CHARS,
     MAX_STORY_CONTENT_LENGTH,
     MAX_STORY_NAME_LENGTH,
@@ -147,6 +158,121 @@ class ArtStylesUpdate(BaseModel):
         return self
 
 
+ImageGenerationTarget = Literal[
+    "character_asset", "chapter_cover", "chapter_guide", "page"
+]
+
+
+class ImageProviderStatus(BaseModel):
+    """生图服务配置状态；Key 只返回脱敏值。"""
+
+    configured: bool
+    source: Literal["env", "db", "none"] = "none"
+    masked_key: str | None = None
+    base_url: str
+    model: str
+    size: str
+    quality: str
+    db_configured: bool = False
+
+
+class ImageProviderUpdate(BaseModel):
+    base_url: str = Field(min_length=1, max_length=500)
+    model: str = Field(min_length=1, max_length=100)
+    size: str = Field(min_length=3, max_length=20)
+    quality: Literal["auto", "low", "medium", "high"] = "high"
+    # 为空表示保持已保存的 Key 不变
+    api_key: SecretStr | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("接口地址必须以 http:// 或 https:// 开头")
+        return value
+
+    @field_validator("model", "size")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator("size")
+    @classmethod
+    def _validate_size(cls, value: str) -> str:
+        if not re.fullmatch(r"\d{2,5}x\d{2,5}", value):
+            raise ValueError("尺寸格式应为 宽x高，例如 1024x1536")
+        return value
+
+    @field_validator("api_key")
+    @classmethod
+    def _strip_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        if not value.get_secret_value().strip():
+            return None
+        return value
+
+
+class ImageProviderTestResult(BaseModel):
+    ok: bool
+    models: list[str] = Field(default_factory=list)
+    message: str = ""
+
+
+class CharacterAssetGenerateRequest(BaseModel):
+    character_name: str = Field(min_length=1, max_length=MAX_CHARACTER_NAME_LENGTH)
+
+    @field_validator("character_name")
+    @classmethod
+    def _strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("角色名不能为空")
+        return value
+
+
+class ImageGenerationPreview(BaseModel):
+    generation_id: str
+    target_type: ImageGenerationTarget
+    old_url: str | None = None
+    new_url: str
+    model: str
+    size: str
+    elapsed_ms: int
+
+
+class ImageGenerationItem(BaseModel):
+    id: str
+    target_type: ImageGenerationTarget
+    url: str
+    created_at: datetime
+    model: str
+    size: str
+    file_bytes: int
+    used_at: datetime | None = None
+    is_current: bool = False
+    prompt: str = ""
+    reference_names: list[str] = Field(default_factory=list)
+
+    @field_serializer("created_at", "used_at")
+    def _serialize_time(self, value: datetime | None) -> str | None:
+        return utc_iso(value)
+
+
+class ImageGenerationList(BaseModel):
+    items: list[ImageGenerationItem] = Field(default_factory=list)
+    total_bytes: int = 0
+
+
+class ImageGenerationClearResult(BaseModel):
+    deleted: int
+    freed_bytes: int
+
+
 class SettingsRead(BaseModel):
     prompt: str
     is_default: bool
@@ -156,10 +282,105 @@ class SettingsRead(BaseModel):
     active_art_style: str | None = None
     # 生图前置提示词：全局生效，复制角色卡与分镜提示词时自动拼在开头
     image_prefix_prompt: str = ""
+    image_provider: ImageProviderStatus
 
     @field_serializer("prompt_updated_at")
     def _serialize_prompt_time(self, value: datetime | None) -> str | None:
         return utc_iso(value)
+
+
+class PromptTemplatesRead(BaseModel):
+    body: str
+    cover: str
+    body_default: str
+    cover_default: str
+    body_is_default: bool
+    cover_is_default: bool
+    placeholders: list[str] = Field(default_factory=list)
+
+
+class PromptTemplatesUpdate(BaseModel):
+    body: str = Field(min_length=1, max_length=MAX_PROMPT_TEMPLATE_LENGTH)
+    cover: str = Field(min_length=1, max_length=MAX_PROMPT_TEMPLATE_LENGTH)
+
+
+class PromptTemplateVersionRead(BaseModel):
+    id: int
+    template_type: Literal["body", "cover"]
+    content: str
+    note: str
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        return utc_iso(value) or ""
+
+
+class PromptRenderContext(BaseModel):
+    content: str = Field(min_length=1, max_length=MAX_PAGE_IMAGE_PROMPT_LENGTH)
+    character_consistency: str = Field(
+        default="", max_length=MAX_PAGE_TEXT_LENGTH
+    )
+    narration_main: str = Field(
+        default="", max_length=MAX_PAGE_SHORT_TEXT_LENGTH
+    )
+    narration_sub: str = Field(default="", max_length=MAX_PAGE_TEXT_LENGTH)
+    narration_highlight: str = Field(
+        default="", max_length=MAX_PAGE_HIGHLIGHT_LENGTH
+    )
+    dialogues: list[str] = Field(
+        default_factory=list, max_length=MAX_PAGE_DIALOGUES
+    )
+    page_number: int | None = Field(
+        default=None, ge=1, le=MAX_BREAKDOWN_PAGES
+    )
+    chapter_number: int | None = Field(
+        default=None, ge=1, le=MAX_CHAPTERS
+    )
+    label: str = Field(default="", max_length=MAX_CHAPTER_LABEL_LENGTH)
+
+
+class PromptRenderRequest(BaseModel):
+    template_type: Literal["body", "cover"]
+    story_id: int = Field(ge=1)
+    context: PromptRenderContext
+    # 设置页预览不落提示词快照
+    preview: bool = False
+
+
+class PromptRenderResult(BaseModel):
+    prompt: str
+    template_type: Literal["body", "cover"]
+    story_id: int
+    # 本次实际匹配到的设计规则；供 cover-director / 审计使用
+    applied_rules: list[dict] = Field(default_factory=list)
+    rule_checks: list[dict] = Field(default_factory=list)
+    snapshot_id: int | None = None
+
+
+class PromptSnapshotRead(BaseModel):
+    id: int
+    story_id: int
+    target_type: Literal["cover", "body"]
+    chapter_number: int | None = None
+    page_number: int | None = None
+    template_type: Literal["body", "cover"]
+    prompt: str
+    applied_rules: list[dict] = Field(default_factory=list)
+    rule_checks: list[dict] = Field(default_factory=list)
+    restored_from_id: int | None = None
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        return utc_iso(value) or ""
+
+
+class PromptSnapshotRestoreResult(BaseModel):
+    snapshot: PromptSnapshotRead
+    target_type: Literal["cover", "body"]
+    chapter_number: int | None = None
+    page_number: int | None = None
 
 
 class PromptUpdate(BaseModel):
@@ -341,6 +562,82 @@ class ChapterCoverOptimizeResult(BaseModel):
         return value
 
 
+class CoverCopyOptionsRequest(BaseModel):
+    """生成封面文案方案：可带当前未保存的封面文字和用户方向。"""
+
+    chapter_title: str = Field(default="", max_length=MAX_CHAPTER_TITLE_LENGTH)
+    cover_label: str = Field(default="", max_length=MAX_CHAPTER_LABEL_LENGTH)
+    cover_main: str = Field(default="", max_length=MAX_PAGE_SHORT_TEXT_LENGTH)
+    cover_highlight: str = Field(
+        default="", max_length=MAX_PAGE_HIGHLIGHT_LENGTH
+    )
+    cover_sub: str = Field(default="", max_length=MAX_PAGE_TEXT_LENGTH)
+    direction: str = Field(default="", max_length=MAX_PAGE_TEXT_LENGTH)
+
+    @field_validator(
+        "chapter_title",
+        "cover_label",
+        "cover_main",
+        "cover_highlight",
+        "cover_sub",
+        "direction",
+    )
+    @classmethod
+    def _strip_optional(cls, value: str) -> str:
+        return value.strip()
+
+
+class CoverCopyOption(BaseModel):
+    """单个封面文案方案：主标题、标红词、副标题和画面建议。"""
+
+    style: str = Field(min_length=1, max_length=20)
+    feature: str = Field(min_length=1, max_length=200)
+    hook_source: str = Field(default="", max_length=30)
+    visual_hint: str = Field(default="", max_length=300)
+    visual_content: str = Field(min_length=1, max_length=2_000)
+    narration_main: str = Field(
+        min_length=1, max_length=MAX_PAGE_SHORT_TEXT_LENGTH
+    )
+    narration_highlight: str = Field(
+        default="", max_length=MAX_PAGE_HIGHLIGHT_LENGTH
+    )
+    narration_sub: str = Field(min_length=1, max_length=MAX_PAGE_TEXT_LENGTH)
+    recommended: bool = False
+    recommend_reason: str = Field(default="", max_length=200)
+    image_prompt: str = Field(
+        default="", max_length=MAX_PAGE_IMAGE_PROMPT_LENGTH
+    )
+
+    @field_validator(
+        "style",
+        "feature",
+        "hook_source",
+        "visual_hint",
+        "visual_content",
+        "narration_main",
+        "narration_highlight",
+        "narration_sub",
+        "recommend_reason",
+        "image_prompt",
+    )
+    @classmethod
+    def _strip_option(cls, value: str) -> str:
+        return value.strip()
+
+
+class CoverCopyOptionsPayload(BaseModel):
+    """DeepSeek 原始输出；契约要求 3 个，容忍 2–4 个。"""
+
+    options: list[CoverCopyOption] = Field(min_length=2, max_length=4)
+
+
+class CoverCopyOptionsResponse(BaseModel):
+    story_id: int
+    chapter_number: int
+    post_title: str | None = None
+    options: list[CoverCopyOption]
+
+
 class CharacterSyncItem(BaseModel):
     """从生图平台同步回来的单个角色：名字用于匹配，外形整体覆盖。"""
 
@@ -415,6 +712,82 @@ class ArtStyleOptimizeRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SensitiveWordItem(BaseModel):
+    """敏感词词条：替换为、分类与是否启用。"""
+
+    word: str = Field(min_length=1, max_length=50)
+    replacement: str = Field(default="", max_length=100)
+    category: str = Field(default="", max_length=50)
+    enabled: bool = True
+
+    @field_validator("word")
+    @classmethod
+    def _strip_word(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("敏感词不能为空")
+        return value
+
+    @field_validator("replacement", "category")
+    @classmethod
+    def _strip_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class SensitiveWordsPayload(BaseModel):
+    words: list[SensitiveWordItem] = Field(default_factory=list, max_length=5000)
+
+
+class SensitiveWordsRead(BaseModel):
+    words: list[SensitiveWordItem] = Field(default_factory=list)
+
+
+class SensitiveScanRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_STORY_CONTENT_LENGTH)
+
+
+class SensitiveWordMatch(BaseModel):
+    word: str
+    replacement: str
+    category: str
+    start: int
+    end: int
+
+
+class SensitiveScanResult(BaseModel):
+    matches: list[SensitiveWordMatch]
+    total: int
+    counts: dict[str, int]
+    dictionary_version: str
+
+
+class SensitiveApplyItem(BaseModel):
+    word: str = Field(min_length=1, max_length=50)
+    replacement: str = Field(default="", max_length=100)
+
+
+class SensitiveApplyRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_STORY_CONTENT_LENGTH)
+    items: list[SensitiveApplyItem] = Field(min_length=1)
+
+
+class SensitiveStoryApplyRequest(BaseModel):
+    items: list[SensitiveApplyItem] = Field(min_length=1)
+
+
+class SensitiveAppliedItem(BaseModel):
+    word: str
+    replacement: str
+    count: int
+
+
+class SensitiveApplyResult(BaseModel):
+    content: str
+    items: list[SensitiveAppliedItem]
+    dictionary_version: str
+    sensitive_edit: dict
+
+
 class StoryCreate(BaseModel):
     """新建故事；名称可留空，拆解后再补填。"""
 
@@ -425,6 +798,8 @@ class StoryCreate(BaseModel):
     art_style_id: str | None = Field(
         default=None, max_length=MAX_ART_STYLE_ID_LENGTH
     )
+    # 敏感词替换审计（原文、替换后文本、逐词次数）；不传表示没有执行过
+    sensitive_edit: dict | None = None
 
     @field_validator("name")
     @classmethod
@@ -525,11 +900,722 @@ class StoryRead(_TimestampMixin):
     zhihu_article_id: str = ""
     zhihu_alias: str = ""
     zhihu_aliases: list[str] = Field(default_factory=list)
+    # 敏感词替换审计；没有执行过时为 None
+    sensitive_edit: dict | None = None
 
 
 class UploadRead(BaseModel):
     filename: str
     url: str
+
+
+# ---------------------------------------------------------------------------
+# 设计建议库
+# ---------------------------------------------------------------------------
+
+DesignFeedbackSource = Literal["xiaohongshu", "manual"]
+DesignFeedbackCategory = Literal[
+    "cover", "comic", "title", "color", "expression", "text", "pacing", "other"
+]
+DesignFeedbackScope = Literal["global", "story", "chapter"]
+DesignFeedbackPriority = Literal["low", "medium", "high"]
+DesignFeedbackStatus = Literal["open", "applied", "verified", "archived"]
+DesignFeedbackTargetType = Literal[
+    "cover", "page", "guide", "character", "other"
+]
+DesignFeedbackRuleTarget = Literal["cover", "comic", "all"]
+
+
+def _clean_design_feedback_tags(values: list[str] | None) -> list[str]:
+    """去空白、去重并限制标签数量与单标签长度。"""
+    cleaned: list[str] = []
+    for value in values or []:
+        value = value.strip()
+        if not value:
+            continue
+        if len(value) > MAX_DESIGN_FEEDBACK_TAG_LENGTH:
+            raise ValueError(
+                f"单个标签不能超过 {MAX_DESIGN_FEEDBACK_TAG_LENGTH} 字"
+            )
+        if value not in cleaned:
+            cleaned.append(value)
+    if len(cleaned) > MAX_DESIGN_FEEDBACK_TAGS:
+        raise ValueError(f"标签最多 {MAX_DESIGN_FEEDBACK_TAGS} 个")
+    return cleaned
+
+
+class DesignFeedbackCreate(BaseModel):
+    """新建设计建议；用户只提交原始素材，标题可空、由服务层生成。"""
+
+    title: str = Field(default="", max_length=MAX_DESIGN_FEEDBACK_TITLE_LENGTH)
+    content: str = Field(
+        default="", max_length=MAX_DESIGN_FEEDBACK_CONTENT_LENGTH
+    )
+    source: DesignFeedbackSource = "xiaohongshu"
+    source_url: str = Field(
+        default="", max_length=MAX_DESIGN_FEEDBACK_SOURCE_URL_LENGTH
+    )
+    screenshot_filename: str | None = Field(default=None, max_length=64)
+    category: DesignFeedbackCategory = "other"
+    scope: DesignFeedbackScope = "global"
+    story_id: int | None = Field(default=None, ge=1)
+    chapter_number: int | None = Field(default=None, ge=1, le=MAX_CHAPTERS)
+    tags: list[str] = Field(
+        default_factory=list, max_length=MAX_DESIGN_FEEDBACK_TAGS
+    )
+    priority: DesignFeedbackPriority = "medium"
+
+    @field_validator("title", "content")
+    @classmethod
+    def _strip_material(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _require_material(self) -> "DesignFeedbackCreate":
+        if not self.content and not self.screenshot_filename:
+            raise ValueError("建议原文和截图至少填一个")
+        return self
+
+    @field_validator("source_url")
+    @classmethod
+    def _strip_source_url(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("screenshot_filename")
+    @classmethod
+    def _strip_screenshot(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, value: list[str]) -> list[str]:
+        return _clean_design_feedback_tags(value)
+
+
+class DesignFeedbackUpdate(BaseModel):
+    """局部更新建议；跨字段的范围校验在服务层合并后执行。"""
+
+    title: str | None = Field(
+        default=None, min_length=1, max_length=MAX_DESIGN_FEEDBACK_TITLE_LENGTH
+    )
+    content: str | None = Field(
+        default=None, min_length=1, max_length=MAX_DESIGN_FEEDBACK_CONTENT_LENGTH
+    )
+    source: DesignFeedbackSource | None = None
+    source_url: str | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_SOURCE_URL_LENGTH
+    )
+    screenshot_filename: str | None = Field(default=None, max_length=64)
+    category: DesignFeedbackCategory | None = None
+    scope: DesignFeedbackScope | None = None
+    story_id: int | None = Field(default=None, ge=1)
+    chapter_number: int | None = Field(default=None, ge=1, le=MAX_CHAPTERS)
+    tags: list[str] | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_TAGS
+    )
+    priority: DesignFeedbackPriority | None = None
+    status: DesignFeedbackStatus | None = None
+
+    @field_validator("title", "content")
+    @classmethod
+    def _strip_optional_material(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("source_url")
+    @classmethod
+    def _strip_optional_url(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("screenshot_filename")
+    @classmethod
+    def _strip_optional_screenshot(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_optional_tags(cls, value: list[str] | None) -> list[str] | None:
+        return _clean_design_feedback_tags(value) if value is not None else None
+
+
+class DesignFeedbackRead(_TimestampMixin):
+    """建议列表项；story_name / screenshot_url / application_count 由服务层计算。"""
+
+    id: int
+    title: str
+    content: str
+    source: DesignFeedbackSource
+    source_url: str
+    screenshot_filename: str | None = None
+    screenshot_url: str | None = None
+    category: DesignFeedbackCategory
+    scope: DesignFeedbackScope
+    story_id: int | None = None
+    story_name: str | None = None
+    chapter_number: int | None = None
+    tags: list[str] = Field(default_factory=list)
+    priority: DesignFeedbackPriority
+    status: DesignFeedbackStatus
+    application_count: int = 0
+    is_rule: bool = False
+    rule_text: str = ""
+    rule_target: DesignFeedbackRuleTarget = "cover"
+    rule_promoted_at: datetime | None = None
+
+    @field_serializer("rule_promoted_at")
+    def _serialize_rule_promoted_at(self, value: datetime | None) -> str | None:
+        return utc_iso(value)
+
+
+class DesignFeedbackRulePromote(BaseModel):
+    """把建议升级为通用规则；规则文本会进入后续渲染的提示词。"""
+
+    rule_text: str = Field(
+        min_length=1, max_length=MAX_DESIGN_FEEDBACK_PROMPT_LENGTH
+    )
+    rule_target: DesignFeedbackRuleTarget = "cover"
+
+    @field_validator("rule_text")
+    @classmethod
+    def _strip_rule_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+
+DesignRuleKind = Literal["prompt", "negative", "text", "review", "check"]
+DesignRuleTarget = Literal["cover", "body", "guide", "all"]
+DesignRuleSlot = Literal["scene", "cover_mode", "text_zone", "none"]
+DesignRuleScopeType = Literal["global", "story", "chapter", "pages"]
+DesignRulePriority = Literal["hard", "soft"]
+DesignRuleStatus = Literal["draft", "active", "disabled"]
+DesignRuleCreatedBy = Literal["claude", "user"]
+
+
+def _unique_positive_ints(
+    values: list[int] | None, *, label: str, maximum: int
+) -> list[int]:
+    cleaned: list[int] = []
+    for value in values or []:
+        if value < 1 or value > maximum:
+            raise ValueError(f"{label}必须在 1–{maximum} 之间")
+        if value not in cleaned:
+            cleaned.append(value)
+    return cleaned
+
+
+def _validate_rule_scope(
+    scope_type: str,
+    target: str,
+    story_id: int | None,
+    chapter_numbers: list[int],
+    page_numbers: list[int],
+) -> tuple[int | None, list[int], list[int]]:
+    if scope_type == "global":
+        return None, [], []
+    if scope_type == "story":
+        if story_id is None:
+            raise ValueError("指定故事必须选择故事")
+        return story_id, [], []
+    if scope_type == "chapter":
+        if story_id is None or not chapter_numbers:
+            raise ValueError("指定章节必须选择故事和至少一个章节")
+        return story_id, chapter_numbers, []
+    if scope_type == "pages":
+        if target != "body":
+            raise ValueError("页码范围只适用于正文规则")
+        if story_id is None or not chapter_numbers or not page_numbers:
+            raise ValueError("页码范围必须选择故事、章节和至少一个页面")
+        return story_id, chapter_numbers, page_numbers
+    raise ValueError("规则范围不合法")
+
+
+def _validate_check_spec(spec: dict) -> None:
+    check_type = spec.get("type")
+    if check_type in ("required_terms", "forbidden_terms"):
+        terms = spec.get("terms")
+        if not isinstance(terms, list) or not terms or not all(
+            isinstance(term, str) and term.strip() for term in terms
+        ):
+            raise ValueError("检查配置 terms 必须是非空字符串数组")
+        return
+    if check_type == "max_chars":
+        field = spec.get("field")
+        value = spec.get("value")
+        if field not in {
+            "content",
+            "narration_main",
+            "narration_sub",
+            "narration_highlight",
+            "label",
+            "prompt",
+        }:
+            raise ValueError("max_chars 的 field 不合法")
+        if not isinstance(value, int) or value < 1:
+            raise ValueError("max_chars 的 value 必须是正整数")
+        return
+    if check_type == "regex":
+        pattern = spec.get("pattern")
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise ValueError("regex 检查必须填写 pattern")
+        return
+    raise ValueError("check_spec.type 只能是 required_terms / forbidden_terms / max_chars / regex")
+
+
+class DesignRuleCreate(BaseModel):
+    """创建规则草案；默认 draft，不参与渲染。"""
+
+    title: str = Field(min_length=1, max_length=MAX_DESIGN_FEEDBACK_TITLE_LENGTH)
+    kind: DesignRuleKind = "prompt"
+    target: DesignRuleTarget = "cover"
+    slot: DesignRuleSlot = "scene"
+    scope_type: DesignRuleScopeType = "global"
+    story_id: int | None = Field(default=None, ge=1)
+    chapter_numbers: list[int] = Field(
+        default_factory=list, max_length=MAX_CHAPTERS
+    )
+    page_numbers: list[int] = Field(
+        default_factory=list, max_length=MAX_BREAKDOWN_PAGES
+    )
+    priority: DesignRulePriority = "soft"
+    requirement: str = Field(
+        default="", max_length=MAX_DESIGN_FEEDBACK_PROMPT_LENGTH
+    )
+    negative_terms: list[str] = Field(default_factory=list)
+    review_check: str = Field(
+        default="", max_length=MAX_DESIGN_FEEDBACK_PROMPT_LENGTH
+    )
+    check_spec: dict = Field(default_factory=dict)
+    created_by: DesignRuleCreatedBy = "user"
+
+    @field_validator("title")
+    @classmethod
+    def _strip_rule_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator("requirement", "review_check")
+    @classmethod
+    def _strip_rule_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("chapter_numbers")
+    @classmethod
+    def _clean_chapters(cls, value: list[int]) -> list[int]:
+        return _unique_positive_ints(
+            value, label="章节号", maximum=MAX_CHAPTERS
+        )
+
+    @field_validator("page_numbers")
+    @classmethod
+    def _clean_pages(cls, value: list[int]) -> list[int]:
+        return _unique_positive_ints(
+            value, label="章内页码", maximum=MAX_BREAKDOWN_PAGES
+        )
+
+    @model_validator(mode="after")
+    def _validate_rule(self) -> "DesignRuleCreate":
+        story_id, chapters, pages = _validate_rule_scope(
+            self.scope_type,
+            self.target,
+            self.story_id,
+            self.chapter_numbers,
+            self.page_numbers,
+        )
+        self.story_id = story_id
+        self.chapter_numbers = chapters
+        self.page_numbers = pages
+        if self.kind == "negative" and not self.negative_terms:
+            raise ValueError("负面规则至少需要一个负面词")
+        if self.kind in ("prompt", "text") and not self.requirement:
+            raise ValueError("提示词 / 文字规则必须填写规则正文")
+        if self.kind == "review" and not self.review_check:
+            raise ValueError("审片规则必须填写检查标准")
+        if self.kind == "check":
+            if not self.check_spec:
+                raise ValueError("硬检查规则必须填写检查配置")
+            _validate_check_spec(self.check_spec)
+        return self
+
+
+class DesignRuleUpdate(BaseModel):
+    """局部更新规则；合并后由服务层重新校验范围。"""
+
+    title: str | None = Field(
+        default=None, min_length=1, max_length=MAX_DESIGN_FEEDBACK_TITLE_LENGTH
+    )
+    kind: DesignRuleKind | None = None
+    target: DesignRuleTarget | None = None
+    slot: DesignRuleSlot | None = None
+    scope_type: DesignRuleScopeType | None = None
+    story_id: int | None = Field(default=None, ge=1)
+    chapter_numbers: list[int] | None = Field(
+        default=None, max_length=MAX_CHAPTERS
+    )
+    page_numbers: list[int] | None = Field(
+        default=None, max_length=MAX_BREAKDOWN_PAGES
+    )
+    priority: DesignRulePriority | None = None
+    requirement: str | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_PROMPT_LENGTH
+    )
+    negative_terms: list[str] | None = None
+    review_check: str | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_PROMPT_LENGTH
+    )
+    check_spec: dict | None = None
+
+    @field_validator("chapter_numbers")
+    @classmethod
+    def _clean_optional_chapters(
+        cls, value: list[int] | None
+    ) -> list[int] | None:
+        return (
+            _unique_positive_ints(value, label="章节号", maximum=MAX_CHAPTERS)
+            if value is not None
+            else None
+        )
+
+    @field_validator("page_numbers")
+    @classmethod
+    def _clean_optional_pages(
+        cls, value: list[int] | None
+    ) -> list[int] | None:
+        return (
+            _unique_positive_ints(
+                value, label="章内页码", maximum=MAX_BREAKDOWN_PAGES
+            )
+            if value is not None
+            else None
+        )
+
+    @field_validator("title")
+    @classmethod
+    def _strip_optional_rule_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator("requirement", "review_check")
+    @classmethod
+    def _strip_optional_rule_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class DesignRuleRead(_TimestampMixin):
+    id: int
+    feedback_id: int
+    feedback_title: str | None = None
+    title: str
+    kind: DesignRuleKind
+    target: DesignRuleTarget
+    slot: DesignRuleSlot
+    scope_type: DesignRuleScopeType
+    story_id: int | None = None
+    story_name: str | None = None
+    chapter_numbers: list[int] = Field(default_factory=list)
+    page_numbers: list[int] = Field(default_factory=list)
+    priority: DesignRulePriority
+    requirement: str
+    negative_terms: list[str] = Field(default_factory=list)
+    review_check: str
+    check_spec: dict = Field(default_factory=dict)
+    status: DesignRuleStatus
+    version: int
+    created_by: DesignRuleCreatedBy
+    check_count: int = 0
+    passed_count: int = 0
+    failed_count: int = 0
+    latest_result: str | None = None
+    template_applied_at: datetime | None = None
+    coverage_run_id: int | None = None
+    coverage_status: str | None = None
+    coverage_total: int = 0
+    coverage_pending: int = 0
+    coverage_updated_at: datetime | None = None
+
+    @field_serializer("template_applied_at", "coverage_updated_at")
+    def _serialize_template_applied_at(
+        self, value: datetime | None
+    ) -> str | None:
+        return utc_iso(value)
+
+
+class DesignRuleRevisionRead(BaseModel):
+    id: int
+    rule_id: int
+    version: int
+    change_note: str
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        return utc_iso(value) or ""
+
+
+class DesignRuleTemplatePreviewItem(BaseModel):
+    template_type: Literal["body", "cover"]
+    before: str
+    after: str
+    inserted_block: str
+
+
+class DesignRuleTemplatePreview(BaseModel):
+    items: list[DesignRuleTemplatePreviewItem] = Field(default_factory=list)
+
+
+class DesignRuleTemplateApplyResult(BaseModel):
+    templates: PromptTemplatesRead
+    rule: DesignRuleRead
+    applied_template_types: list[Literal["body", "cover"]] = Field(
+        default_factory=list
+    )
+
+
+class DesignRuleOnceTarget(BaseModel):
+    target_type: Literal["cover", "body"]
+    story_id: int = Field(ge=1)
+    chapter_number: int = Field(ge=1, le=MAX_CHAPTERS)
+    page_number: int | None = Field(
+        default=None, ge=1, le=MAX_BREAKDOWN_PAGES
+    )
+
+    @model_validator(mode="after")
+    def _validate_once_target(self) -> "DesignRuleOnceTarget":
+        if self.target_type == "body" and self.page_number is None:
+            raise ValueError("正文页仅本次应用必须填写章内页码")
+        if self.target_type == "cover" and self.page_number is not None:
+            raise ValueError("封面仅本次应用不能填写页码")
+        return self
+
+
+class DesignRuleOncePreview(BaseModel):
+    target_type: Literal["cover", "body"]
+    story_id: int
+    chapter_number: int
+    page_number: int | None = None
+    before: str
+    after: str
+    inserted_block: str
+
+
+class DesignRuleOnceApplyResult(BaseModel):
+    rule: DesignRuleRead
+    target_type: Literal["cover", "body"]
+    story_id: int
+    chapter_number: int
+    page_number: int | None = None
+    prompt: str
+
+
+class DesignRuleResultCreate(BaseModel):
+    result: Literal["passed", "failed", "unknown"]
+    story_id: int = Field(ge=1)
+    target_type: Literal["cover", "body", "guide", "other"]
+    chapter_number: int | None = Field(default=None, ge=1, le=MAX_CHAPTERS)
+    page_number: int | None = Field(
+        default=None, ge=1, le=MAX_BREAKDOWN_PAGES
+    )
+    message: str = Field(
+        default="", max_length=MAX_DESIGN_FEEDBACK_SUMMARY_LENGTH
+    )
+    image_url: str | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_IMAGE_URL_LENGTH
+    )
+    snapshot_id: int | None = Field(default=None, ge=1)
+    reviewer: Literal["claude", "user"] = "claude"
+
+    @field_validator("message")
+    @classmethod
+    def _strip_message(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("image_url")
+    @classmethod
+    def _strip_image_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @model_validator(mode="after")
+    def _validate_target(self) -> "DesignRuleResultCreate":
+        if self.target_type in ("cover", "guide") and self.chapter_number is None:
+            raise ValueError("封面 / 引导卡核验必须填写章节号")
+        if self.target_type == "page" and self.page_number is None:
+            raise ValueError("正文页核验必须填写页码")
+        return self
+
+
+class DesignRuleResultRead(BaseModel):
+    id: int
+    rule_id: int
+    story_id: int
+    target_type: Literal["cover", "body", "guide", "other"]
+    chapter_number: int | None = None
+    page_number: int | None = None
+    result: Literal["passed", "failed", "unknown"]
+    message: str
+    image_url: str | None = None
+    snapshot_id: int | None = None
+    reviewer: Literal["claude", "user"]
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        return utc_iso(value) or ""
+
+
+class DesignRulePreviewRequest(BaseModel):
+    target: DesignRuleTarget
+    scope_type: DesignRuleScopeType
+    story_id: int | None = Field(default=None, ge=1)
+    chapter_numbers: list[int] = Field(
+        default_factory=list, max_length=MAX_CHAPTERS
+    )
+    page_numbers: list[int] = Field(
+        default_factory=list, max_length=MAX_BREAKDOWN_PAGES
+    )
+
+    @field_validator("chapter_numbers")
+    @classmethod
+    def _clean_preview_chapters(cls, value: list[int]) -> list[int]:
+        return _unique_positive_ints(
+            value, label="章节号", maximum=MAX_CHAPTERS
+        )
+
+    @field_validator("page_numbers")
+    @classmethod
+    def _clean_preview_pages(cls, value: list[int]) -> list[int]:
+        return _unique_positive_ints(
+            value, label="章内页码", maximum=MAX_BREAKDOWN_PAGES
+        )
+
+    @model_validator(mode="after")
+    def _validate_preview(self) -> "DesignRulePreviewRequest":
+        story_id, chapters, pages = _validate_rule_scope(
+            self.scope_type,
+            self.target,
+            self.story_id,
+            self.chapter_numbers,
+            self.page_numbers,
+        )
+        self.story_id = story_id
+        self.chapter_numbers = chapters
+        self.page_numbers = pages
+        return self
+
+
+class DesignRulePreviewRead(BaseModel):
+    cover: int = 0
+    body: int = 0
+    guide: int = 0
+    total: int = 0
+    samples: list[str] = Field(default_factory=list)
+
+
+class DesignRuleApplied(BaseModel):
+    id: int
+    title: str
+    kind: DesignRuleKind
+    target: DesignRuleTarget
+    scope_type: DesignRuleScopeType
+    priority: DesignRulePriority
+    requirement: str
+    negative_terms: list[str] = Field(default_factory=list)
+    review_check: str = ""
+
+
+class DesignFeedbackApplicationCreate(BaseModel):
+    """记录一次建议应用；目标定位与改前 / 改后快照。"""
+
+    target_type: DesignFeedbackTargetType
+    story_id: int = Field(ge=1)
+    chapter_number: int | None = Field(default=None, ge=1, le=MAX_CHAPTERS)
+    page_number: int | None = Field(
+        default=None, ge=1, le=MAX_BREAKDOWN_PAGES
+    )
+    summary: str = Field(
+        min_length=1, max_length=MAX_DESIGN_FEEDBACK_SUMMARY_LENGTH
+    )
+    before_prompt: str | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_PROMPT_LENGTH
+    )
+    after_prompt: str | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_PROMPT_LENGTH
+    )
+    before_image_url: str | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_IMAGE_URL_LENGTH
+    )
+    after_image_url: str | None = Field(
+        default=None, max_length=MAX_DESIGN_FEEDBACK_IMAGE_URL_LENGTH
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def _strip_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator(
+        "before_prompt",
+        "after_prompt",
+        "before_image_url",
+        "after_image_url",
+    )
+    @classmethod
+    def _strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @model_validator(mode="after")
+    def _validate_target(self) -> "DesignFeedbackApplicationCreate":
+        if self.target_type in ("cover", "guide") and self.chapter_number is None:
+            raise ValueError("封面 / 引导卡应用必须填写章节号")
+        if self.target_type == "page" and self.page_number is None:
+            raise ValueError("正文页应用必须填写页码")
+        return self
+
+
+class DesignFeedbackApplicationRead(BaseModel):
+    """应用记录；story_name 由服务层计算。"""
+
+    id: int
+    feedback_id: int
+    target_type: DesignFeedbackTargetType
+    story_id: int
+    story_name: str | None = None
+    chapter_number: int | None = None
+    page_number: int | None = None
+    summary: str
+    before_prompt: str | None = None
+    after_prompt: str | None = None
+    before_image_url: str | None = None
+    after_image_url: str | None = None
+    applied_at: datetime
+
+    @field_serializer("applied_at")
+    def _serialize_applied_at(self, value: datetime) -> str:
+        return utc_iso(value) or ""
+
+
+class DesignFeedbackDetail(DesignFeedbackRead):
+    applications: list[DesignFeedbackApplicationRead] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +1773,235 @@ class StoryboardPageRead(StoryboardPagePayload):
     image_url: str | None = None
 
 
+class ImageIngestPayload(BaseModel):
+    """外部生图接口回传一张图片：URL 或 base64 二选一。"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "image_url": "https://example.com/story4/ch3-p1.png"
+                },
+                {
+                    "image_base64": "iVBORw0KGgo...",
+                    "filename": "ch3-p1.png",
+                },
+            ]
+        }
+    )
+
+    image_url: str | None = Field(
+        default=None,
+        max_length=2048,
+        description=(
+            "公网可访问的图片地址，后端会主动下载；"
+            "与 image_base64 二选一"
+        ),
+        examples=["https://example.com/story4/ch3-p1.png"],
+    )
+    image_base64: str | None = Field(
+        default=None,
+        description=(
+            "图片 base64，可带 data:image/png;base64, 前缀；"
+            "与 image_url 二选一"
+        ),
+        examples=["iVBORw0KGgo..."],
+    )
+    filename: str | None = Field(
+        default=None,
+        max_length=128,
+        description="可选文件名，只用于判断图片格式；省略时按图片头推断",
+        examples=["ch3-p1.png"],
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> "ImageIngestPayload":
+        has_url = bool((self.image_url or "").strip())
+        has_base64 = bool((self.image_base64 or "").strip())
+        if has_url == has_base64:
+            raise ValueError("image_url 和 image_base64 必须且只能提供一个")
+        return self
+
+
+class ImageBatchIngestItem(ImageIngestPayload):
+    """批量回传中的一张正文页图片：页码 + URL 或 base64。"""
+
+    page_number: int = Field(
+        ge=1,
+        le=MAX_BREAKDOWN_PAGES,
+        description="全局页码，不是章内页码",
+        examples=[17],
+    )
+
+
+class ImageBatchIngestRequest(BaseModel):
+    """批量回传正文页成品图：一次最多 20 张。"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "items": [
+                        {
+                            "page_number": 17,
+                            "image_url": "https://example.com/story4/p17.png",
+                        },
+                        {
+                            "page_number": 18,
+                            "image_base64": "iVBORw0KGgo...",
+                            "filename": "page-0018.png",
+                        },
+                    ]
+                }
+            ]
+        }
+    )
+
+    items: list[ImageBatchIngestItem] = Field(
+        min_length=1,
+        max_length=MAX_BATCH_INGEST_ITEMS,
+        description=(
+            f"要回传的正文页列表，1–{MAX_BATCH_INGEST_ITEMS} 张；"
+            "页码不能重复"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unique_page_numbers(self) -> "ImageBatchIngestRequest":
+        numbers = [item.page_number for item in self.items]
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("items 里的 page_number 不能重复")
+        return self
+
+
+class ImageBatchIngestItemResult(BaseModel):
+    """批量回传的单页结果；一项失败不影响其他项。"""
+
+    page_number: int
+    ok: bool
+    image_url: str | None = None
+    error: str | None = None
+    code: str | None = None
+
+
+class ImageBatchIngestResponse(BaseModel):
+    """批量回传汇总：成功数、失败数与逐页结果。"""
+
+    total: int
+    succeeded: int
+    failed: int
+    items: list[ImageBatchIngestItemResult]
+
+
+class CharacterAssetBatchIngestItem(ImageIngestPayload):
+    """批量回传中的一张角色资产图：角色下标 + URL 或 base64。"""
+
+    character_index: int = Field(
+        ge=0,
+        le=MAX_CHARACTER_CARDS - 1,
+        description="characters 数组下标，从 0 开始",
+        examples=[0],
+    )
+
+
+class CharacterAssetBatchIngestRequest(BaseModel):
+    """批量回传角色资产图：一次最多 20 张。"""
+
+    items: list[CharacterAssetBatchIngestItem] = Field(
+        min_length=1,
+        max_length=MAX_BATCH_INGEST_ITEMS,
+        description=(
+            f"要回传的角色资产图列表，1–{MAX_BATCH_INGEST_ITEMS} 张；"
+            "character_index 不能重复"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unique_character_indexes(self) -> "CharacterAssetBatchIngestRequest":
+        indexes = [item.character_index for item in self.items]
+        if len(indexes) != len(set(indexes)):
+            raise ValueError("items 里的 character_index 不能重复")
+        return self
+
+
+class CharacterAssetBatchIngestItemResult(BaseModel):
+    """批量回传的单角色结果；一项失败不影响其他项。"""
+
+    character_index: int
+    name: str | None = None
+    ok: bool
+    asset_url: str | None = None
+    error: str | None = None
+    code: str | None = None
+
+
+class CharacterAssetBatchIngestResponse(BaseModel):
+    """批量回传汇总：成功数、失败数与逐角色结果。"""
+
+    total: int
+    succeeded: int
+    failed: int
+    items: list[CharacterAssetBatchIngestItemResult]
+
+
+AliasStampTarget = Literal["page", "cover", "guide"]
+
+
+class AliasStampRequest(BaseModel):
+    """批量给图片底部加别名；不传 alias 时使用故事已保存的知乎别名。"""
+
+    alias: str | None = Field(
+        default=None,
+        max_length=20,
+        description="可选，覆盖故事别名；必须是 6–8 个汉字",
+    )
+    chapter_number: int | None = Field(
+        default=None, ge=1, le=MAX_CHAPTERS,
+        description="只处理该 chapter 的封面、正文页、引导卡；不传则处理整个故事",
+    )
+    chapter_numbers: list[int] | None = Field(
+        default=None,
+        max_length=MAX_CHAPTERS,
+        description="只处理这些章节；与 chapter_number 二选一",
+    )
+    page_numbers: list[int] | None = Field(
+        default=None,
+        max_length=MAX_BREAKDOWN_PAGES,
+        description="只处理这些全局页码；不传则按章节或全故事处理",
+    )
+
+    @model_validator(mode="after")
+    def _one_chapter_scope(self) -> "AliasStampRequest":
+        if self.chapter_number is not None and self.chapter_numbers:
+            raise ValueError("chapter_number 和 chapter_numbers 只能传一个")
+        if self.chapter_numbers:
+            if len(set(self.chapter_numbers)) != len(self.chapter_numbers):
+                raise ValueError("chapter_numbers 不能重复")
+        return self
+
+
+class AliasStampItem(BaseModel):
+    target: AliasStampTarget
+    chapter_number: int | None = None
+    page_number: int | None = None
+    ok: bool
+    error: str | None = None
+
+
+class AliasStampResult(BaseModel):
+    alias: str
+    stamped: int
+    failed: int
+    items: list[AliasStampItem]
+    backup_dir: str
+
+
+class AliasRestoreResult(BaseModel):
+    restored: int
+    failed: int
+    items: list[AliasStampItem]
+
+
 class StoryboardMappingItem(BaseModel):
     """分镜对照表的一行：第几页对应优化文的哪一段。"""
 
@@ -827,7 +2142,7 @@ class MappingReviewRead(BaseModel):
 class ChapterCover(BaseModel):
     """章节封面：顶部小字 + 主旁白 + 副旁白 + 生图提示词。
 
-    主旁白 < 15 个汉字、副旁白 < 35 个汉字（标点不计）由前端自检把关；
+    主旁白 ≤12 个汉字、副旁白 < 35 个汉字（标点不计）由前端自检把关；
     这里只限制最大长度，允许先占位后补。
     """
 
@@ -876,6 +2191,21 @@ class ChapterGuide(BaseModel):
 
 class ChapterGuideRead(ChapterGuide):
     image_url: str | None = None
+
+
+class ChapterAssetArchiveRead(BaseModel):
+    filename: str
+    url: str
+    bytes: int
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        return utc_iso(value) or ""
+
+
+class ChapterAssetArchiveRestoreResult(BaseModel):
+    url: str
 
 
 class StoryboardChapter(BaseModel):
@@ -1147,3 +2477,30 @@ class GenerateResponse(BaseModel):
     story_id: int
     chapter_number: int | None = None
     options: list[GeneratedCopyOption]
+
+
+class DesignRuleCoverageConfirm(BaseModel):
+    item_keys: list[str] = Field(min_length=1, max_length=2000)
+    status: str = Field(pattern="^(covered|missing)$")
+    note: str = Field(default="", max_length=500)
+
+
+class DesignRuleCoverageRunRead(BaseModel):
+    id: int
+    rule_id: int
+    feedback_id: int
+    rule_version: int
+    scope_snapshot: dict = Field(default_factory=dict)
+    status: str
+    total: int
+    processed: int
+    covered: int
+    partial: int
+    missing: int
+    pending: int
+    error_count: int
+    items: list[dict] = Field(default_factory=list)
+    error_message: str = ""
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None

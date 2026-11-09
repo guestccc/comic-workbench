@@ -53,6 +53,21 @@ function decisionOptions() {
   ]
 }
 
+/** 理由常用「当前：…；备选：…；理由：…」写成一行，按标签切成多行。 */
+function splitReviewReason(reason: string): string[] {
+  const text = (reason || '').trim()
+  if (!text) return []
+  if (!/(当前|备选|理由|alternative)[：:]/.test(text)) {
+    return text
+      .split(String.fromCharCode(10))
+      .filter((line) => line.trim())
+  }
+  return text
+    .split(/；\s*(?=(?:当前|备选|理由|alternative)[：:])/g)
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
 function changeTitle(change: MappingReviewChange): string {
   const pages = change.old_page_numbers.join('、')
   const delta =
@@ -242,9 +257,13 @@ export default function MappingReviewPanel({
         }
       >
         {change.reason ? (
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-            {change.reason}
-          </Typography.Paragraph>
+          <div className="mapping-review-reason" style={{ marginBottom: 8 }}>
+            {splitReviewReason(change.reason).map((line) => (
+              <div className="mapping-review-reason-line" key={line}>
+                {line}
+              </div>
+            ))}
+          </div>
         ) : null}
 
         <Typography.Text strong>现状</Typography.Text>
@@ -262,7 +281,9 @@ export default function MappingReviewPanel({
         {change.proposed_segments.length > 0 ? (
           <>
             <Typography.Text strong style={{ display: 'block', marginTop: 8 }}>
-              建议拆成 {change.proposed_segments.length} 段
+              建议：现状 {currentItems.length} 段 → 调整后{' '}
+              {change.proposed_segments.length} 段（
+              {KIND_TEXT[change.kind] ?? change.kind}）
             </Typography.Text>
             <div className="mapping-review-segments">
               {change.proposed_segments.map((segment, index) => (
@@ -271,7 +292,7 @@ export default function MappingReviewPanel({
                   key={`${change.id}-${index}`}
                 >
                   <Typography.Text type="secondary">
-                    建议段 {index + 1}：
+                    调整后第 {index + 1} 段：
                   </Typography.Text>
                   {segment.source_text}
                   {segment.summary ? (

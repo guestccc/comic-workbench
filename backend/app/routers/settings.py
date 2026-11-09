@@ -30,9 +30,32 @@ from ..schemas import (
     DeepSeekKeyUpdate,
     DeepSeekStatus,
     ImagePrefixPromptUpdate,
+    ImageProviderStatus,
+    ImageProviderTestResult,
+    ImageProviderUpdate,
     PromptOptimizeRequest,
+    PromptRenderRequest,
+    PromptRenderResult,
+    PromptTemplatesRead,
+    PromptTemplatesUpdate,
+    PromptTemplateVersionRead,
     PromptUpdate,
     SettingsRead,
+)
+from ..services.prompt_templates import (
+    get_prompt_templates,
+    list_template_versions,
+    render_for_story,
+    restore_template_version,
+    save_prompt_templates,
+)
+from ..services.prompt_snapshots import create_snapshot
+from ..services.image_provider import (
+    clear_image_provider_key,
+    list_models,
+    provider_status,
+    resolve_image_provider,
+    save_image_provider,
 )
 from ..services.deepseek import (
     stream_art_style_optimization,
@@ -48,6 +71,7 @@ def _build_settings(db: Session) -> SettingsRead:
     key, source, db_configured = resolve_deepseek_key(db)
     art_styles, active_art_style = get_art_styles(db)
     image_prefix_prompt, _ = get_image_prefix_prompt(db)
+    image_provider = resolve_image_provider(db)
     return SettingsRead(
         prompt=prompt,
         is_default=prompt == DEFAULT_START_PROMPT,
@@ -61,12 +85,132 @@ def _build_settings(db: Session) -> SettingsRead:
         art_styles=art_styles,  # type: ignore[arg-type]
         active_art_style=active_art_style,
         image_prefix_prompt=image_prefix_prompt,
+        image_provider=ImageProviderStatus(**provider_status(image_provider)),
     )
 
 
 @router.get("", response_model=SettingsRead)
 def read_settings(db: Session = Depends(get_db)) -> SettingsRead:
     return _build_settings(db)
+
+
+@router.get("/prompt-templates", response_model=PromptTemplatesRead)
+def read_prompt_templates(db: Session = Depends(get_db)) -> PromptTemplatesRead:
+    """返回正文 / 封面模板、默认值与占位符说明。"""
+    return PromptTemplatesRead(**get_prompt_templates(db))
+
+
+@router.put("/prompt-templates", response_model=PromptTemplatesRead)
+def update_prompt_templates(
+    payload: PromptTemplatesUpdate, db: Session = Depends(get_db)
+) -> PromptTemplatesRead:
+    """保存两份模板；未知或缺失占位符会被拒绝。"""
+    return PromptTemplatesRead(
+        **save_prompt_templates(db, payload.body, payload.cover)
+    )
+
+
+@router.get(
+    "/prompt-templates/versions",
+    response_model=list[PromptTemplateVersionRead],
+)
+def read_template_versions(
+    template_type: str = "body",
+    limit: int = 50,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    if template_type not in {"body", "cover"}:
+        raise AppError(422, "模板类型不合法", "PROMPT_TEMPLATE_TYPE_INVALID")
+    return list_template_versions(db, template_type, limit)
+
+
+@router.post(
+    "/prompt-templates/versions/{version_id}/restore",
+    response_model=PromptTemplatesRead,
+)
+def restore_template_version_route(
+    version_id: int, db: Session = Depends(get_db)
+) -> dict:
+    return restore_template_version(db, version_id)
+
+
+@router.post("/prompt-templates/render", response_model=PromptRenderResult)
+def render_prompt_template(
+    payload: PromptRenderRequest, db: Session = Depends(get_db)
+) -> PromptRenderResult:
+    """统一渲染入口：注入画风原文、文字区、页码、负面提示词与设计规则。"""
+    context = payload.context.model_dump()
+    prompt, applied_rules, rule_checks = render_for_story(
+        db,
+        template_type=payload.template_type,
+        story_id=payload.story_id,
+        context=context,
+    )
+    snapshot_id = None
+    if not payload.preview:
+        snapshot = create_snapshot(
+            db,
+            story_id=payload.story_id,
+            template_type=payload.template_type,
+            context=context,
+            prompt=prompt,
+            applied_rules=applied_rules,
+            rule_checks=rule_checks,
+        )
+        snapshot_id = snapshot["id"]
+    return PromptRenderResult(
+        prompt=prompt,
+        template_type=payload.template_type,
+        story_id=payload.story_id,
+        applied_rules=applied_rules,
+        rule_checks=rule_checks,
+        snapshot_id=snapshot_id,
+    )
+
+
+@router.put("/image-provider", response_model=SettingsRead)
+def update_image_provider(
+    payload: ImageProviderUpdate, db: Session = Depends(get_db)
+) -> SettingsRead:
+    """保存生图服务配置；api_key 为空时保留已保存的 Key。"""
+    api_key = (
+        payload.api_key.get_secret_value().strip()
+        if payload.api_key is not None
+        else None
+    )
+    save_image_provider(
+        db,
+        base_url=payload.base_url,
+        model=payload.model,
+        size=payload.size,
+        quality=payload.quality,
+        api_key=api_key or None,
+    )
+    return _build_settings(db)
+
+
+@router.delete("/image-provider/key", response_model=SettingsRead)
+def clear_image_provider_key_setting(
+    db: Session = Depends(get_db),
+) -> SettingsRead:
+    """清除本地保存的生图 Key；环境变量仍可生效。"""
+    clear_image_provider_key(db)
+    return _build_settings(db)
+
+
+@router.post("/image-provider/test", response_model=ImageProviderTestResult)
+def test_image_provider(db: Session = Depends(get_db)) -> ImageProviderTestResult:
+    """调用 /v1/models 测试连接，不产生生图费用。"""
+    config = resolve_image_provider(db)
+    try:
+        models = list_models(config)
+    except AppError as exc:
+        return ImageProviderTestResult(ok=False, message=exc.message)
+    return ImageProviderTestResult(
+        ok=True,
+        models=models,
+        message=f"连接成功，当前分组可用 {len(models)} 个模型",
+    )
 
 
 @router.put("/prompt", response_model=SettingsRead)
