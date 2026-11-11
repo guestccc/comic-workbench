@@ -19,6 +19,7 @@ import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { api, ApiError, getErrorMessage } from '../api/client'
 import { copyText } from '../utils/clipboard'
+import ChapterPublishPanel from './ChapterPublishPanel'
 import CopyOptionsModal from './CopyOptionsModal'
 import type {
   GeneratedCopyOption,
@@ -34,11 +35,16 @@ interface PostConfigTabProps {
   postConfig: StoryPostConfig | null
   keyConfigured: boolean
   onSaved: (config: StoryPostConfig) => void
+  /** 发布面板保存故事级小红书设置后回写详情页 */
+  onStoryUpdated: (story: Story) => void
+  /** 发布前检查需要切到「知乎推广 / 章节发布」时由详情页切换 tab */
+  onNavigateTab?: (tab: string) => void
 }
 
 interface PostConfigFormValues {
   title: string
   content: string
+  tags: string[]
 }
 
 const LEADING_ALIAS_PATTERN = /^\s*【[^】]{1,20}】\s*/
@@ -63,6 +69,8 @@ export default function PostConfigTab({
   postConfig,
   keyConfigured,
   onSaved,
+  onNavigateTab,
+  onStoryUpdated,
 }: PostConfigTabProps) {
   const { message, modal } = App.useApp()
   const navigate = useNavigate()
@@ -89,6 +97,22 @@ export default function PostConfigTab({
   const [chapterConfig, setChapterConfig] =
     useState<StoryChapterPostConfig | null>(null)
   const [chapterLoading, setChapterLoading] = useState(false)
+  const [presetTags, setPresetTags] = useState<string[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .getPublishTagPresets()
+      .then((data) => {
+        if (!cancelled) setPresetTags(data.tags)
+      })
+      .catch(() => {
+        // 预设标签只是候选项，读取失败不影响手动输入
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const currentChapter = chapters.find(
     (chapter) => chapter.chapter_number === chapterNumber,
@@ -128,6 +152,7 @@ export default function PostConfigTab({
         form.setFieldsValue({
           title: config?.title ?? '',
           content: config?.content ?? '',
+          tags: config?.tags ?? [],
         })
         setDirty(false)
       })
@@ -149,6 +174,7 @@ export default function PostConfigTab({
     form.setFieldsValue({
       title: postConfig?.title ?? '',
       content: postConfig?.content ?? '',
+      tags: [],
     })
     setDirty(false)
   }, [postConfig, form, hasChapters])
@@ -213,6 +239,7 @@ export default function PostConfigTab({
           {
             title: values.title ?? '',
             content: values.content ?? '',
+            tags: values.tags ?? [],
           },
         )
         setChapterConfig(saved)
@@ -379,78 +406,122 @@ export default function PostConfigTab({
         </div>
       )}
 
-      <Form
-        form={form}
-        layout="vertical"
-        onValuesChange={() => setDirty(true)}
+      <div
+        className={
+          hasChapters
+            ? 'post-config-layout'
+            : 'post-config-layout post-config-layout-single'
+        }
       >
-        <Form.Item
-          name="title"
-          label="小红书标题（18 字以内）"
-          rules={[{ max: 18, message: '标题不能超过 18 字' }]}
-          extra={
-            hasChapters
-              ? '围绕本章的钩子写标题，不要概括整篇故事。'
-              : '用户刷到作品时，第一眼只看到标题和第 1 页封面图，正文要点进来才看得到。标题用反差、悬念、利益点或强情绪制造点击欲，不要平铺直叙地概括剧情。'
-          }
-        >
-          <Input
-            maxLength={18}
-            showCount
-            placeholder="例如：相亲对象开口就问我有没有A8"
-          />
-        </Form.Item>
-
-        <Form.Item
-          name="content"
-          label="内容介绍"
-          extra={contentExtra}
-        >
-          <Input.TextArea
-            rows={12}
-            maxLength={20000}
-            showCount
-            placeholder="正文内容..."
-          />
-        </Form.Item>
-      </Form>
-
-      <div className="panel-footer">
-        <Typography.Text type="secondary">
-          {activeConfig
-            ? `最近保存：${dayjs(activeConfig.updated_at).format(
-                'YYYY-MM-DD HH:mm',
-              )}`
-            : hasChapters
-              ? `第 ${chapterNumber ?? '?'} 章尚未保存文案`
-              : '尚未保存过发文配置'}
-          {dirty ? ' · 有未保存修改' : ''}
-        </Typography.Text>
-        <Space wrap>
-          <Button
-            icon={<ThunderboltOutlined />}
-            loading={generating}
-            disabled={
-              !keyConfigured ||
-              (hasChapters && chapterNumber == null) ||
-              chapterLoading
-            }
-            onClick={() => void handleGenerate()}
+        <div className="post-config-editor">
+          <Form
+            form={form}
+            layout="vertical"
+            onValuesChange={() => setDirty(true)}
           >
-            {hasChapters ? 'AI 生成本章文案' : 'AI 生成文案'}
-          </Button>
-          <Button
-            type="primary"
-            icon={<SaveOutlined />}
-            loading={saving}
-            disabled={
-              chapterLoading || (hasChapters && chapterNumber == null)
-            }
-            onClick={() => void handleSave()}
-          >
-            {hasChapters ? '保存本章文案' : '保存配置'}
-          </Button>
-        </Space>
+            <Form.Item
+              name="title"
+              label="小红书标题（18 字以内）"
+              rules={[{ max: 18, message: '标题不能超过 18 字' }]}
+              extra={
+                hasChapters
+                  ? '围绕本章的钩子写标题，不要概括整篇故事。'
+                  : '用户刷到作品时，第一眼只看到标题和第 1 页封面图，正文要点进来才看得到。标题用反差、悬念、利益点或强情绪制造点击欲，不要平铺直叙地概括剧情。'
+              }
+            >
+              <Input
+                maxLength={18}
+                showCount
+                placeholder="例如：相亲对象开口就问我有没有A8"
+              />
+            </Form.Item>
+
+            <Form.Item
+              name="content"
+              label="内容介绍"
+              extra={contentExtra}
+            >
+              <Input.TextArea
+                rows={12}
+                maxLength={20000}
+                showCount
+                placeholder="正文内容..."
+              />
+            </Form.Item>
+
+            {hasChapters && (
+              <Form.Item
+                name="tags"
+                label="发布标签"
+                extra="从预设标签中选择，或直接输入新标签后回车；最多 10 个。发布时按 #话题 追加。"
+              >
+                <Select
+                  mode="tags"
+                  maxCount={10}
+                  placeholder="选择或输入标签"
+                  tokenSeparators={[',', '，', '#']}
+                  options={presetTags.map((tag) => ({
+                    value: tag,
+                    label: tag,
+                  }))}
+                />
+              </Form.Item>
+            )}
+          </Form>
+
+          <div className="panel-footer">
+            <Typography.Text type="secondary">
+              {activeConfig
+                ? `最近保存：${dayjs(activeConfig.updated_at).format(
+                    'YYYY-MM-DD HH:mm',
+                  )}`
+                : hasChapters
+                  ? `第 ${chapterNumber ?? '?'} 章尚未保存文案`
+                  : '尚未保存过发文配置'}
+              {dirty ? ' · 有未保存修改' : ''}
+            </Typography.Text>
+            <Space wrap>
+              <Button
+                icon={<ThunderboltOutlined />}
+                loading={generating}
+                disabled={
+                  !keyConfigured ||
+                  (hasChapters && chapterNumber == null) ||
+                  chapterLoading
+                }
+                onClick={() => void handleGenerate()}
+              >
+                {hasChapters ? 'AI 生成本章文案' : 'AI 生成文案'}
+              </Button>
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                loading={saving}
+                disabled={
+                  chapterLoading || (hasChapters && chapterNumber == null)
+                }
+                onClick={() => void handleSave()}
+              >
+                {hasChapters ? '保存本章文案' : '保存配置'}
+              </Button>
+            </Space>
+          </div>
+        </div>
+
+        {hasChapters && chapterNumber != null && (
+          <div className="post-config-publish">
+            <ChapterPublishPanel
+              storyId={story.id}
+              chapterNumber={chapterNumber}
+              chapterTitle={currentChapter?.title ?? `第${chapterNumber}章`}
+              story={story}
+              savedConfig={chapterConfig}
+              dirty={dirty}
+              onNavigateTab={onNavigateTab}
+              onStoryUpdated={onStoryUpdated}
+            />
+          </div>
+        )}
       </div>
 
       <CopyOptionsModal

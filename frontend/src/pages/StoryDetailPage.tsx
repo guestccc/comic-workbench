@@ -475,6 +475,8 @@ export default function StoryDetailPage() {
                   postConfig={postConfig}
                   keyConfigured={settings?.deepseek.configured ?? false}
                   onSaved={setPostConfig}
+                  onNavigateTab={setActiveTab}
+                  onStoryUpdated={setStory}
                 />
               ),
             },

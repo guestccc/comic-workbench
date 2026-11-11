@@ -63,6 +63,7 @@ def _to_chapter_read(
         chapter_number=config.chapter_number,
         title=config.title,
         content=config.content,
+        tags=config.tags or [],
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -154,6 +155,7 @@ def save_post_config(
             db.add(config)
         config.title = payload.title
         config.content = content
+        config.tags = payload.tags
         db.commit()
         db.refresh(config)
         return _to_chapter_read(config)

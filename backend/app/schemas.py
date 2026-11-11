@@ -66,6 +66,9 @@ from .config import (
     MAX_POST_CONFIG_TITLE_LENGTH,
     MAX_POST_CONTENT_LENGTH,
     MAX_POST_TITLE_LENGTH,
+    MAX_PUBLISH_TAGS,
+    MAX_PUBLISH_TAG_LENGTH,
+    PUBLISH_TIMEZONE,
     MAX_PROMPT_LENGTH,
     MAX_PROMPT_OPTIMIZE_MESSAGES,
     MAX_PROMPT_TEMPLATE_LENGTH,
@@ -75,9 +78,18 @@ from .config import (
     MAX_ZHIHU_ALIASES,
     MAX_ZHIHU_ALIAS_LENGTH,
     MAX_ZHIHU_ARTICLE_ID_LENGTH,
+    MAX_XHS_DECLARATION_LENGTH,
+    MAX_XHS_REPOST_SOURCE_LENGTH,
+    XHS_DEFAULT_DECLARATION,
 )
 
 PostStatus = Literal["draft", "published"]
+PublishPlatform = Literal["douyin", "xiaohongshu"]
+PublishMode = Literal["scheduled", "immediate"]
+PublishJobStatus = Literal[
+    "queued", "running", "scheduled", "failed", "unknown", "published"
+]
+PublishAccountStatus = Literal["unknown", "valid", "invalid"]
 
 
 def utc_iso(value: datetime | None) -> str | None:
@@ -883,6 +895,24 @@ class ZhihuAliasSuggestionsRead(BaseModel):
     aliases: list[str]
 
 
+class StoryXiaohongshuUpdate(BaseModel):
+    """故事级小红书发布设置；所有章节共用同一份。"""
+
+    # 取值必须是平台选项文案之一；空串表示不声明
+    declaration: str = Field(
+        default=XHS_DEFAULT_DECLARATION, max_length=MAX_XHS_DECLARATION_LENGTH
+    )
+    # 仅「来源转载」生效；其他声明下原样保存但不进入载荷
+    repost_source: str = Field(
+        default="", max_length=MAX_XHS_REPOST_SOURCE_LENGTH
+    )
+
+    @field_validator("declaration", "repost_source")
+    @classmethod
+    def _strip_text(cls, value: str) -> str:
+        return value.strip()
+
+
 class StoryRead(_TimestampMixin):
     model_config = ConfigDict(from_attributes=True)
 
@@ -902,6 +932,10 @@ class StoryRead(_TimestampMixin):
     zhihu_aliases: list[str] = Field(default_factory=list)
     # 敏感词替换审计；没有执行过时为 None
     sensitive_edit: dict | None = None
+    # 小红书发布设置（故事级）
+    xhs_collection: str = ""
+    xhs_declaration: str = XHS_DEFAULT_DECLARATION
+    xhs_repost_source: str = ""
 
 
 class UploadRead(BaseModel):
@@ -2368,6 +2402,22 @@ class MappingReviewApplyResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _clean_publish_tags(values: list[str] | None) -> list[str]:
+    """发布标签：去空白、去开头的 #、去重，并限制数量与单标签长度。"""
+    cleaned: list[str] = []
+    for value in values or []:
+        value = value.strip().lstrip("#").strip()
+        if not value:
+            continue
+        if len(value) > MAX_PUBLISH_TAG_LENGTH:
+            raise ValueError(f"单个标签不能超过 {MAX_PUBLISH_TAG_LENGTH} 字")
+        if value not in cleaned:
+            cleaned.append(value)
+    if len(cleaned) > MAX_PUBLISH_TAGS:
+        raise ValueError(f"标签最多 {MAX_PUBLISH_TAGS} 个")
+    return cleaned
+
+
 class StoryPostConfigUpdate(BaseModel):
     """全量保存发文配置；标题与正文都允许为空。
 
@@ -2377,11 +2427,18 @@ class StoryPostConfigUpdate(BaseModel):
 
     title: str = Field(default="", max_length=MAX_POST_CONFIG_TITLE_LENGTH)
     content: str = Field(default="", max_length=MAX_POST_CONTENT_LENGTH)
+    # 只有章节配置会保存标签；旧版整篇故事配置忽略该字段。
+    tags: list[str] = Field(default_factory=list)
 
     @field_validator("title", "content")
     @classmethod
     def _strip(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, value: list[str]) -> list[str]:
+        return _clean_publish_tags(value)
 
 
 class StoryPostConfigRead(_TimestampMixin):
@@ -2399,6 +2456,7 @@ class StoryChapterPostConfigRead(_TimestampMixin):
     chapter_number: int
     title: str
     content: str
+    tags: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -2504,3 +2562,214 @@ class DesignRuleCoverageRunRead(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# 多平台发布（抖音 / 小红书）
+# ---------------------------------------------------------------------------
+
+
+def _normalize_schedule(value: datetime | None) -> datetime | None:
+    """无时区输入按北京时间理解，统一转成带时区的值。"""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=PUBLISH_TIMEZONE)
+    return value
+
+
+class PublishTagPresetsRead(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+
+
+class XhsDeclarationOptionRead(BaseModel):
+    """小红书内容声明的一个可选项；value 即写回与预检使用的文案。"""
+
+    value: str
+    label: str
+
+
+class XhsDeclarationOptionsRead(BaseModel):
+    """平台内容声明的全部可选文案；前端只渲染，不自行维护列表。"""
+
+    options: list[XhsDeclarationOptionRead] = Field(default_factory=list)
+    default: str
+    # 「来源转载」需要额外填写媒体名，前端据此显示输入框
+    repost_value: str
+
+
+class PublishTagPresetsUpdate(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, value: list[str]) -> list[str]:
+        return _clean_publish_tags(value)
+
+
+class PublishAccountRead(_TimestampMixin):
+    id: int
+    platform: PublishPlatform
+    account_name: str
+    display_name: str
+    status: PublishAccountStatus
+    last_checked_at: datetime | None = None
+
+    @field_serializer("last_checked_at")
+    def _serialize_checked_at(self, value: datetime | None) -> str | None:
+        return utc_iso(value)
+
+
+class PublishImageRead(BaseModel):
+    """预览用图片：label 是发布顺序中的位置，url 是 /uploads 地址。"""
+
+    label: str
+    url: str
+    filename: str
+
+
+class PublishPreviewRequest(BaseModel):
+    story_id: int = Field(gt=0)
+    chapter_number: int = Field(ge=1)
+    platform: PublishPlatform = "douyin"
+    account_id: int = Field(gt=0)
+    publish_mode: PublishMode = "scheduled"
+    schedule_at: datetime | None = None
+
+    @field_validator("schedule_at")
+    @classmethod
+    def _normalize(cls, value: datetime | None) -> datetime | None:
+        return _normalize_schedule(value)
+
+
+PreflightStatus = Literal["pass", "warning", "error"]
+PreflightGroup = Literal["content", "alias", "images", "account", "platform"]
+PreflightAction = Literal[
+    "stamp_alias", "check_login", "open_zhihu", "open_chapters", "open_post_config"
+]
+
+
+class PreflightCheckItemRead(BaseModel):
+    label: str
+    status: PreflightStatus
+
+
+class PreflightCheckRead(BaseModel):
+    key: str
+    group: PreflightGroup
+    label: str
+    status: PreflightStatus
+    message: str
+    action: PreflightAction | None = None
+    action_label: str | None = None
+    items: list[PreflightCheckItemRead] = Field(default_factory=list)
+
+
+class PublishPreviewRead(BaseModel):
+    platform: PublishPlatform
+    publish_mode: PublishMode
+    account: PublishAccountRead
+    title: str
+    note: str
+    tags: list[str] = Field(default_factory=list)
+    images: list[PublishImageRead] = Field(default_factory=list)
+    image_count: int = 0
+    title_length: int = 0
+    note_length: int = 0
+    schedule_at: datetime | None = None
+    schedule_min_at: datetime
+    schedule_max_at: datetime
+    payload_hash: str | None = None
+    source_hash: str | None = None
+    # 小红书发布设置：声明文案、来源媒体名与合集名；抖音恒为 None
+    declaration: str | None = None
+    repost_source: str | None = None
+    collection: str | None = None
+    checks: list[PreflightCheckRead] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_serializer("schedule_at", "schedule_min_at", "schedule_max_at")
+    def _serialize_schedule(self, value: datetime | None) -> str | None:
+        return utc_iso(value)
+
+
+class PublishJobCreate(PublishPreviewRequest):
+    """创建任务必须带上预览返回的哈希，证明用户看过同一份载荷。"""
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    confirm: bool = False
+
+
+class PublishPayloadRead(BaseModel):
+    platform: PublishPlatform
+    mode: PublishMode = "scheduled"
+    account_name: str
+    title: str
+    note: str
+    tags: list[str] = Field(default_factory=list)
+    images: list[str] = Field(default_factory=list)
+    schedule_at: datetime | None = None
+    # 小红书发布设置；抖音或历史载荷没有这几项时按不声明、不加入合集处理
+    declaration: str | None = None
+    repost_source: str | None = None
+    collection: str | None = None
+
+    @field_serializer("schedule_at")
+    def _serialize_schedule(self, value: datetime | None) -> str | None:
+        return utc_iso(value)
+
+
+class PublishJobRead(_TimestampMixin):
+    id: str
+    story_id: int
+    chapter_number: int
+    platform: PublishPlatform
+    account_id: int
+    status: PublishJobStatus
+    scheduled_at: datetime
+    payload: PublishPayloadRead
+    payload_hash: str
+    source_hash: str
+    snapshot_dir: str
+    external_url: str
+    exit_code: int | None = None
+    stdout_excerpt: str
+    error_message: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    log_available: bool = False
+
+    @field_serializer("scheduled_at", "started_at", "finished_at")
+    def _serialize_times(self, value: datetime | None) -> str | None:
+        return utc_iso(value)
+
+
+class PublishJobPatch(BaseModel):
+    """人工核对：修正状态（unknown → scheduled/failed）或回填作品链接。"""
+
+    status: Literal["scheduled", "failed", "published"] | None = None
+    external_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("external_url")
+    @classmethod
+    def _strip_url(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class PublishJobLogRead(BaseModel):
+    job_id: str
+    text: str
+    truncated: bool = False
+
+
+class PublishLoginRead(BaseModel):
+    message: str
+
+
+class TerminalLaunchRead(BaseModel):
+    """打开本机终端的结果；仅用于展示，不写库。"""
+
+    terminal: str
+    directory: str
+    message: str

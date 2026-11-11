@@ -75,6 +75,21 @@ interface ChapterEditValues {
   guide_prompt: string
 }
 
+/** 章节 → 编辑表单值。Modal 内容可能晚于 useEffect 挂载，必须同时作为 initialValues 传入。 */
+function chapterEditValues(chapter: StoryboardChapterRead): ChapterEditValues {
+  return {
+    title: chapter.title,
+    cover_label: chapter.cover.label,
+    cover_main: chapter.cover.narration_main,
+    cover_highlight: chapter.cover.narration_highlight,
+    cover_sub: chapter.cover.narration_sub,
+    cover_prompt: chapter.cover.image_prompt,
+    guide_text: chapter.guide.text,
+    guide_sub: chapter.guide.sub_text,
+    guide_prompt: chapter.guide.image_prompt,
+  }
+}
+
 /** 成品图 / 章节图片上限，与后端 MAX_PAGE_IMAGE_BYTES 保持一致。 */
 const CHAPTER_IMAGE_MAX_SIZE = 15 * 1024 * 1024
 
@@ -512,19 +527,20 @@ export default function StoryboardChaptersTab({
   const openEdit = (chapter: StoryboardChapterRead) => {
     setEditing(chapter)
     setCoverOptimizerOpen(false)
-    form.setFieldsValue({
-      title: chapter.title,
-      cover_label: chapter.cover.label,
-      cover_main: chapter.cover.narration_main,
-      cover_highlight: chapter.cover.narration_highlight,
-      cover_sub: chapter.cover.narration_sub,
-      cover_prompt: chapter.cover.image_prompt,
-      guide_text: chapter.guide.text,
-      guide_sub: chapter.guide.sub_text,
-      guide_prompt: chapter.guide.image_prompt,
-    })
     setEditOpen(true)
   }
+
+  // 弹窗使用 destroyOnHidden + preserve=false：Form 每次打开都会重新挂载，
+  // 挂载时会用 initialValues 重置 store。因此章节值既作为 initialValues，
+  // 也在表单已挂载后回填一次，避免时序差异导致字段为空。
+  const editInitialValues = useMemo(
+    () => (editing ? chapterEditValues(editing) : undefined),
+    [editing],
+  )
+  useEffect(() => {
+    if (!editOpen || !editInitialValues) return
+    form.setFieldsValue(editInitialValues)
+  }, [editOpen, editInitialValues, form])
 
   /** 点击时快照表单值，确保刚输入的封面内容一定被带到 AI 优化弹窗。 */
   const openCoverOptimizer = () => {
@@ -1162,8 +1178,19 @@ export default function StoryboardChaptersTab({
         cancelText="取消"
         width={760}
         destroyOnHidden
+        afterOpenChange={(open) => {
+          // 打开动画结束后 Form 必定已挂载，再回填一次，兜住挂载时序差异
+          if (open && editing) {
+            form.setFieldsValue(chapterEditValues(editing))
+          }
+        }}
       >
-        <Form form={form} layout="vertical" preserve={false}>
+        <Form
+          form={form}
+          layout="vertical"
+          preserve={false}
+          initialValues={editInitialValues}
+        >
           <Form.Item
             name="title"
             label="章节标题"

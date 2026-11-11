@@ -12,6 +12,8 @@ data/*.db-wal
 data/*.db-shm
 data/*.log
 data/backups/
+data/publish-logs/
+data/reports/
 backend/uploads/*
 !backend/uploads/.gitkeep
 backend/alias-backups/

@@ -80,12 +80,45 @@ def _atomic_save(image: Image.Image, path: Path) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+def alias_backup_root(upload_dir: Path, story_id: int) -> Path:
+    """别名水印备份根目录：uploads/alias-backups/<故事ID>。"""
+    return upload_dir.parent / "alias-backups" / str(story_id)
+
+
 def backup_path_for(
     upload_dir: Path, backup_root: Path, image_path: Path
 ) -> Path:
     """备份目录保持 uploads 下的相对结构，便于整故事恢复。"""
     relative = image_path.resolve().relative_to(upload_dir.resolve())
     return backup_root / relative
+
+
+def stamped_alias(
+    image_path: Path,
+    *,
+    upload_dir: Path,
+    backup_root: Path,
+    current_hash: str | None = None,
+) -> str | None:
+    """图片当前内容是否就是某别名加过水印的版本；返回该别名或 None。
+
+    只读：不修改图片、不写备份。只能识别本工作台生成的水印，
+    外部工具加的别名会返回 None，不会误判为已加。
+    """
+    try:
+        backup = backup_path_for(upload_dir, backup_root, image_path)
+    except (OSError, ValueError):
+        return None
+    meta = _read_meta(backup)
+    stamped_hash = str(meta.get("stamped_sha256") or "")
+    alias = str(meta.get("alias") or "")
+    if not stamped_hash or not alias:
+        return None
+    if current_hash is None:
+        if not image_path.is_file():
+            return None
+        current_hash = _sha256(image_path)
+    return alias if current_hash == stamped_hash else None
 
 
 def _meta_path(backup: Path) -> Path:

@@ -17,7 +17,12 @@ from .database import (
     create_session_factory,
 )
 from .errors import register_exception_handlers
-from .models import DesignRuleCoverageRun, StoryBreakdown, utc_now
+from .models import (
+    DesignRuleCoverageRun,
+    PublishJob,
+    StoryBreakdown,
+    utc_now,
+)
 from .routers import (
     alias_stamp,
     breakdowns,
@@ -28,13 +33,16 @@ from .routers import (
     post_configs,
     posts,
     prompt_snapshots,
+    publishing,
     sensitive_words,
     settings,
     stories,
+    system,
     uploads,
 )
 from .services.design_rules import migrate_legacy_rules
 from .services.files import organize_page_images
+from .services.publishing import ensure_default_accounts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,6 +90,30 @@ def create_app(app_settings: AppSettings | None = None) -> FastAPI:
                     breakdown.pages or [],
                     breakdown.chapters or [],
                 )
+        # 发布任务没有持久 worker：重启后未开始的标记失败，运行中的状态未知
+        with session_factory() as session:
+            ensure_default_accounts(session)
+            session.execute(
+                update(PublishJob)
+                .where(PublishJob.status == "queued")
+                .values(
+                    status="failed",
+                    error_message="服务重启，任务尚未执行，请重新创建",
+                    finished_at=utc_now(),
+                )
+            )
+            session.execute(
+                update(PublishJob)
+                .where(PublishJob.status == "running")
+                .values(
+                    status="unknown",
+                    error_message=(
+                        "服务重启，发布进程状态未知，请到对应平台创作中心核对后修正状态"
+                    ),
+                    finished_at=utc_now(),
+                )
+            )
+            session.commit()
         yield
         engine.dispose()
 
@@ -156,6 +188,8 @@ def create_app(app_settings: AppSettings | None = None) -> FastAPI:
     app.include_router(alias_stamp.router)
     app.include_router(post_configs.router)
     app.include_router(posts.router)
+    app.include_router(publishing.router)
+    app.include_router(system.router)
 
     # 只对外挂载上传目录；check_dir=False 允许目录在 lifespan 中延迟创建
     app.mount(

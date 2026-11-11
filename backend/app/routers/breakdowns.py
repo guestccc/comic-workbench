@@ -1876,6 +1876,7 @@ def _chapter_images_zip_response(
     read = _to_breakdown_read(breakdown, story, style, upload_dir)
     result = build_chapter_images_zip(
         upload_dir,
+        story.id,
         story.name,
         [chapter.model_dump() for chapter in read.chapters],
         [page.model_dump() for page in read.pages],

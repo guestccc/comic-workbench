@@ -17,7 +17,11 @@ from ..schemas import (
     AliasStampRequest,
     AliasStampResult,
 )
-from ..services.alias_stamp import restore_alias, stamp_alias
+from ..services.alias_stamp import (
+    alias_backup_root,
+    restore_alias,
+    stamp_alias,
+)
 from ..services.files import (
     chapter_asset_url,
     page_image_url,
@@ -205,7 +209,7 @@ def stamp_story_alias(
         raise AppError(404, "没有找到可加别名的图片", "NO_IMAGES")
 
     lock = _acquire_lock(story_id)
-    backup_root = upload_dir.parent / "alias-backups" / str(story_id)
+    backup_root = alias_backup_root(upload_dir, story_id)
     items: list[AliasStampItem] = []
     try:
         for target in targets:
@@ -292,7 +296,7 @@ def restore_story_alias(
         raise AppError(404, "没有找到可恢复的图片", "NO_IMAGES")
 
     lock = _acquire_lock(story_id)
-    backup_root = upload_dir.parent / "alias-backups" / str(story_id)
+    backup_root = alias_backup_root(upload_dir, story_id)
     items: list[AliasStampItem] = []
     try:
         for target in targets:

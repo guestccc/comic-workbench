@@ -54,6 +54,17 @@ import type {
   PromptTemplatesData,
   PromptTemplatesPayload,
   PromptTemplateVersion,
+  PublishAccount,
+  PublishJob,
+  PublishJobCreatePayload,
+  PublishJobLog,
+  PublishJobPatchPayload,
+  PublishJobStatus,
+  PublishPlatform,
+  PublishPreview,
+  PublishPreviewPayload,
+  PublishTagPresets,
+  XhsDeclarationOptions,
   SensitiveApplyItem,
   SensitiveApplyResult,
   SensitiveEdit,
@@ -70,6 +81,7 @@ import type {
   StoryPostConfig,
   StoryPostConfigPayload,
   StoryZhihuPayload,
+  TerminalLaunchResult,
   UploadResult,
   ZhihuAliasSuggestions,
 } from '../types'
@@ -406,6 +418,15 @@ export const api = {
 
   updateStoryZhihu: (id: number, payload: StoryZhihuPayload) =>
     request<Story>(`/api/stories/${id}/zhihu`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  /** 故事级小红书发布设置：内容声明与来源媒体名（合集暂未接入） */
+  updateStoryXiaohongshu: (
+    id: number,
+    payload: { declaration: string; repost_source: string },
+  ) =>
+    request<Story>(`/api/stories/${id}/xiaohongshu`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
@@ -747,7 +768,88 @@ export const api = {
       },
     ),
 
+  // 多平台发布（抖音 / 小红书）
+  getPublishTagPresets: () =>
+    request<PublishTagPresets>('/api/publishing/tag-presets'),
+  /** 小红书内容声明可选项由后端给出，前端不自行维护文案列表 */
+  getXhsDeclarationOptions: () =>
+    request<XhsDeclarationOptions>('/api/publishing/xhs-declaration-options'),
+  savePublishTagPresets: (tags: string[]) =>
+    request<PublishTagPresets>('/api/publishing/tag-presets', {
+      method: 'PUT',
+      body: JSON.stringify({ tags }),
+    }),
+  listPublishAccounts: (platform: PublishPlatform = 'douyin') =>
+    request<PublishAccount[]>(
+      `/api/publishing/accounts?platform=${encodeURIComponent(platform)}`,
+    ),
+  checkPublishAccount: (accountId: number) =>
+    request<PublishAccount>(
+      `/api/publishing/accounts/${accountId}/check`,
+      { method: 'POST' },
+    ),
+  loginPublishAccount: (accountId: number) =>
+    request<{ message: string }>(
+      `/api/publishing/accounts/${accountId}/login`,
+      { method: 'POST' },
+    ),
+  previewPublish: (payload: PublishPreviewPayload) =>
+    request<PublishPreview>('/api/publishing/preview', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  createPublishJob: (payload: PublishJobCreatePayload) =>
+    request<PublishJob>('/api/publishing/jobs', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  listPublishJobs: (filters: {
+    storyId?: number
+    chapterNumber?: number
+    status?: PublishJobStatus
+    platform?: PublishPlatform
+    limit?: number
+  } = {}) => {
+    const params = new URLSearchParams()
+    if (filters.storyId !== undefined) {
+      params.set('story_id', String(filters.storyId))
+    }
+    if (filters.chapterNumber !== undefined) {
+      params.set('chapter_number', String(filters.chapterNumber))
+    }
+    if (filters.status !== undefined) {
+      params.set('status', filters.status)
+    }
+    if (filters.platform !== undefined) {
+      params.set('platform', filters.platform)
+    }
+    if (filters.limit !== undefined) {
+      params.set('limit', String(filters.limit))
+    }
+    const query = params.toString()
+    return request<PublishJob[]>(
+      `/api/publishing/jobs${query ? `?${query}` : ''}`,
+    )
+  },
+  getPublishJob: (jobId: string) =>
+    request<PublishJob>(`/api/publishing/jobs/${jobId}`),
+  patchPublishJob: (jobId: string, payload: PublishJobPatchPayload) =>
+    request<PublishJob>(`/api/publishing/jobs/${jobId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  getPublishJobLog: (jobId: string) =>
+    request<PublishJobLog>(`/api/publishing/jobs/${jobId}/log`),
+  fetchPublishJobLink: (jobId: string) =>
+    request<PublishJob>(`/api/publishing/jobs/${jobId}/fetch-link`, {
+      method: 'POST',
+    }),
+
   // 上传
+  /** 在项目根目录打开本机终端并启动 Claude Code */
+  openTerminal: () =>
+    request<TerminalLaunchResult>('/api/system/terminal', { method: 'POST' }),
+
   uploadCover: (file: File) => {
     const formData = new FormData()
     formData.append('file', file)

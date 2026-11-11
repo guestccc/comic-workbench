@@ -1,0 +1,268 @@
+diff --git a/README.md b/README.md
+index 656c403..91e2a8f 100644
+--- a/README.md
++++ b/README.md
+@@ -222,6 +222,7 @@ sau douyin upload-note --account <account_name> --images videos/1.png videos/2.p
+ sau kuaishou upload-note --account <account_name> --images videos/1.png videos/2.png videos/3.png --title "图文标题" --note "图文正文"
+ sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png videos/3.png --title "图文标题" --note "图文正文"
+ sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png --title "图文标题" --note "图文正文" --declaration "笔记含AI合成内容"
++sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png --title "图文标题" --note "图文正文" --collection "我的合集"
+ sau facebook-page upload-note --account <account_name> --images images/1.jpg --title "Page 图文" --note "正文" --page "我的 Page" --schedule "2026-10-21 10:30" --result .local/page-result.json
+ sau facebook upload-note --account creator --images images/1.jpg images/2.jpg --title "图片帖" --note "正文"
+ sau instagram upload-note --account creator --images images/1.jpg images/2.jpg --title "图片轮播" --note "正文"
+diff --git a/docs/CLI.md b/docs/CLI.md
+index e4d19bb..0c61894 100644
+--- a/docs/CLI.md
++++ b/docs/CLI.md
+@@ -139,12 +139,14 @@ sau xiaohongshu check --account <account_name>
+ sau xiaohongshu upload-video --account <account_name> --file videos/demo.mp4 --title "示例标题" --desc "示例简介" --tags 小红书,视频
+ sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png videos/3.png --title "图文标题" --note "图文示例" --tags 图文,测试
+ sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png --title "图文标题" --note "图文示例" --declaration "笔记含AI合成内容"
++sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png --title "图文标题" --note "图文示例" --collection "我的合集"
+ ```
+ 
+-`upload-note` 的声明选项：
++`upload-note` 的声明与合集选项：
+ 
+ - `--declaration`：内容类型声明的**精确选项文案**，例如 `笔记含AI合成内容`、`虚构演绎，仅供娱乐`、`内容包含营销广告`。不传则完全不修改发布页声明；传了但设置失败会拒绝发布，避免静默漏声明。
+ - `--repost-source`：声明为「内容来源声明」并填写媒体名称；不能与 `--declaration` 同时使用。
++- `--collection`：加入**已存在**的小红书合集，按名称精确匹配；找不到时告警并跳过，不阻断发布。
+ 
+ 海外环境如果无法登录默认创作者后台，可以通过环境变量切换到 RedNote 域名。该设置同时作用于登录、cookie 校验、视频发布和图文发布：
+ 
+diff --git a/sau_commands/xiaohongshu.py b/sau_commands/xiaohongshu.py
+index 0cf004d..dd4c939 100644
+--- a/sau_commands/xiaohongshu.py
++++ b/sau_commands/xiaohongshu.py
+@@ -62,6 +62,11 @@ def register(platform_parsers):
+         default=None,
+         help="Media name for the repost declaration; selects 内容来源声明 and cannot be combined with --declaration",
+     )
++    xiaohongshu_upload_note_parser.add_argument(
++        "--collection",
++        default=None,
++        help="Existing Xiaohongshu collection name; omitted means no collection",
++    )
+     add_runtime_flags(xiaohongshu_upload_note_parser)
+ 
+ 
+@@ -92,6 +97,7 @@ class XiaohongshuNoteUploadRequest:
+     headless: bool = True
+     declaration: str | None = None
+     repost_source: str | None = None
++    collection: str | None = None
+ 
+ 
+ async def login_xiaohongshu_account(account_name: str, headless: bool = True) -> dict:
+@@ -151,6 +157,7 @@ async def upload_xiaohongshu_note(request: XiaohongshuNoteUploadRequest) -> Path
+         headless=request.headless,
+         declaration=request.declaration,
+         repost_source=request.repost_source,
++        collection=request.collection,
+     )
+     await app.main()
+     return account_file
+@@ -212,6 +219,7 @@ async def run(args):
+             headless=args.headless,
+             declaration=getattr(args, "declaration", None),
+             repost_source=getattr(args, "repost_source", None),
++            collection=getattr(args, "collection", None),
+         )
+         await upload_xiaohongshu_note(request)
+         print(f"Xiaohongshu note upload submitted: {len(request.image_files)} images")
+diff --git a/tests/test_sau_browser_cli.py b/tests/test_sau_browser_cli.py
+index 721383e..c053941 100644
+--- a/tests/test_sau_browser_cli.py
++++ b/tests/test_sau_browser_cli.py
+@@ -340,6 +340,17 @@ class BrowserCliDispatchTests(unittest.TestCase):
+         self.assertEqual(args.declaration, "笔记含AI合成内容")
+         self.assertIsNone(args.repost_source)
+ 
++    def test_xiaohongshu_upload_note_accepts_collection(self):
++        with tempfile.TemporaryDirectory() as tmp_dir:
++            image_path = Path(tmp_dir) / "1.png"
++            image_path.write_bytes(b"image")
++            args = sau_cli.build_parser().parse_args([
++                "xiaohongshu", "upload-note", "--account", "creator",
++                "--images", str(image_path), "--title", "标题",
++                "--collection", "碎碎平安",
++            ])
++        self.assertEqual(args.collection, "碎碎平安")
++
+     def test_xiaohongshu_upload_note_has_no_implicit_declaration(self):
+         with tempfile.TemporaryDirectory() as tmp_dir:
+             image_path = Path(tmp_dir) / "1.png"
+@@ -351,6 +362,16 @@ class BrowserCliDispatchTests(unittest.TestCase):
+         self.assertIsNone(args.declaration)
+         self.assertIsNone(args.repost_source)
+ 
++    def test_xiaohongshu_upload_note_has_no_implicit_collection(self):
++        with tempfile.TemporaryDirectory() as tmp_dir:
++            image_path = Path(tmp_dir) / "1.png"
++            image_path.write_bytes(b"image")
++            args = sau_cli.build_parser().parse_args([
++                "xiaohongshu", "upload-note", "--account", "creator",
++                "--images", str(image_path), "--title", "标题",
++            ])
++        self.assertIsNone(args.collection)
++
+     def test_dispatch_xiaohongshu_upload_note_forwards_declaration(self):
+         args = Namespace(
+             platform="xiaohongshu",
+@@ -365,6 +386,7 @@ class BrowserCliDispatchTests(unittest.TestCase):
+             headless=True,
+             declaration="笔记含AI合成内容",
+             repost_source=None,
++            collection=None,
+         )
+         with patch("sau_commands.xiaohongshu.upload_xiaohongshu_note", new=AsyncMock()) as mock_upload:
+             asyncio.run(sau_cli.dispatch(args))
+@@ -372,6 +394,28 @@ class BrowserCliDispatchTests(unittest.TestCase):
+         request = mock_upload.await_args.args[0]
+         self.assertEqual(request.declaration, "笔记含AI合成内容")
+ 
++    def test_dispatch_xiaohongshu_upload_note_forwards_collection(self):
++        args = Namespace(
++            platform="xiaohongshu",
++            action="upload-note",
++            account="creator",
++            images=[Path("1.png")],
++            title="图文标题",
++            note="图文正文",
++            tags="",
++            schedule=0,
++            debug=False,
++            headless=True,
++            declaration=None,
++            repost_source=None,
++            collection="碎碎平安",
++        )
++        with patch("sau_commands.xiaohongshu.upload_xiaohongshu_note", new=AsyncMock()) as mock_upload:
++            asyncio.run(sau_cli.dispatch(args))
++
++        request = mock_upload.await_args.args[0]
++        self.assertEqual(request.collection, "碎碎平安")
++
+     def test_dispatch_xiaohongshu_upload_note_uses_headless_request(self):
+         args = Namespace(
+             platform="xiaohongshu",
+diff --git a/tests/test_xiaohongshu_uploader.py b/tests/test_xiaohongshu_uploader.py
+index 7e4f035..c997741 100644
+--- a/tests/test_xiaohongshu_uploader.py
++++ b/tests/test_xiaohongshu_uploader.py
+@@ -303,6 +303,29 @@ class XiaohongshuUploaderTests(unittest.TestCase):
+ 
+         self.assertEqual(app.declaration, "笔记含AI合成内容")
+ 
++    def test_note_collection_defaults_to_none(self):
++        app = xhs_main.XiaoHongShuNote(
++            image_paths=["a.png"],
++            note="正文",
++            tags=[],
++            publish_date=0,
++            account_file="account.json",
++        )
++
++        self.assertIsNone(app.collection_name)
++
++    def test_note_collection_is_trimmed(self):
++        app = xhs_main.XiaoHongShuNote(
++            image_paths=["a.png"],
++            note="正文",
++            tags=[],
++            publish_date=0,
++            account_file="account.json",
++            collection=" 碎碎平安 ",
++        )
++
++        self.assertEqual(app.collection_name, "碎碎平安")
++
+     def test_note_rejects_declaration_and_repost_source_together(self):
+         app = xhs_main.XiaoHongShuNote(
+             image_paths=["a.png"],
+diff --git a/uploader/xiaohongshu_uploader/main.py b/uploader/xiaohongshu_uploader/main.py
+index 4db1542..2f9ff44 100644
+--- a/uploader/xiaohongshu_uploader/main.py
++++ b/uploader/xiaohongshu_uploader/main.py
+@@ -577,6 +577,57 @@ class XiaoHongShuBaseUploader(BaseVideoUploader):
+             xiaohongshu_logger.error(_msg("🧾", f"内容声明「{declaration}」设置失败: {exc}"))
+             raise RuntimeError(f"内容声明「{declaration}」设置失败，拒绝继续发布: {exc}") from exc
+ 
++    async def apply_collection(self, page: Page) -> None:
++        """选择已存在的小红书合集。
++
++        发布页「选择合集」弹出 ``.collection-plugin-popover``，条目为
++        ``.item > .item-content > .item-label``。合集名找不到时跳过并告警，
++        不阻断发布（与抖音一致，合集属于可选增强项）。
++        """
++        collection = getattr(self, "collection_name", None)
++        if not collection:
++            return
++        try:
++            trigger = page.get_by_text("选择合集", exact=True).first
++            if not await trigger.count():
++                xiaohongshu_logger.warning(_msg("📚", "未找到「选择合集」入口，跳过合集"))
++                return
++            try:
++                await trigger.scroll_into_view_if_needed(timeout=5000)
++            except Exception:
++                pass
++            try:
++                await trigger.click(timeout=8000)
++            except Exception:
++                await _js_click_by_text(page, "选择合集")
++            await page.wait_for_timeout(1000)
++
++            popover = page.locator(".d-popover.collection-plugin-popover").first
++            await popover.wait_for(state="visible", timeout=8000)
++            item = popover.get_by_text(collection, exact=True).first
++            if not await item.count():
++                xiaohongshu_logger.warning(
++                    _msg("📚", f"合集列表未找到「{collection}」，跳过合集，保持未选状态")
++                )
++                await page.keyboard.press("Escape")
++                await page.wait_for_timeout(300)
++                return
++            try:
++                await item.click(timeout=6000)
++            except Exception:
++                await item.click(force=True, timeout=6000)
++            await page.wait_for_timeout(800)
++            # 选中后入口文案变为合集名，「选择合集」消失
++            if await page.get_by_text("选择合集", exact=True).count():
++                raise RuntimeError(f"合集「{collection}」未生效")
++            xiaohongshu_logger.success(_msg("📚", f"已选择合集：{collection}"))
++        except Exception as exc:
++            xiaohongshu_logger.warning(_msg("📚", f"选择合集失败，跳过合集继续发布: {exc}"))
++            try:
++                await page.keyboard.press("Escape")
++            except Exception:
++                pass
++
+ 
+ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
+     def __init__(
+@@ -798,6 +849,7 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
+         headless: bool = LOCAL_CHROME_HEADLESS,
+         declaration: str | None = None,
+         repost_source: str | None = None,
++        collection: str | None = None,
+     ):
+         super().__init__(
+             publish_date=publish_date,
+@@ -813,6 +865,7 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
+         self.title = title or ((self.desc or self.note)[:20] if (self.desc or self.note) else "")
+         self.declaration = (declaration or "").strip() or None
+         self.repost_source = (repost_source or "").strip() or None
++        self.collection_name = (collection or "").strip() or None
+ 
+     async def validate_upload_args(self):
+         await self.validate_base_args()
+@@ -862,6 +915,7 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
+         await self.fill_meta(page)
+ 
+         await self.apply_content_declaration(page)
++        await self.apply_collection(page)
+ 
+         if self.repost_source:
+             await self.check_original_declaration(page)

@@ -8,6 +8,7 @@ import re
 import shutil
 import uuid
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -871,8 +872,70 @@ def _upload_url_to_path(upload_dir: Path, url: str | None) -> Path | None:
     return path if path.is_file() else None
 
 
+@dataclass(frozen=True, slots=True)
+class ChapterImage:
+    """章节发布图片：label 是发布顺序中的位置，url 用于预览，path 用于复制。"""
+
+    label: str
+    url: str
+    path: Path
+
+
+def collect_chapter_images(
+    upload_dir: Path,
+    story_id: int,
+    chapter: dict,
+    pages: list[dict],
+) -> list[ChapterImage]:
+    """本章发布顺序：封面 → 章内页码 → 引导卡。
+
+    ZIP 导出与发布载荷共用这一个入口。图片绑定由文件系统决定，
+    因此无论是数据库原始章节还是已序列化的章节，都能得到同一结果。
+    """
+    chapter_number = chapter.get("chapter_number")
+    if chapter_number is None:
+        return []
+
+    pages_by_mapping = {
+        page.get("mapping_page_number"): page
+        for page in pages
+        if page.get("mapping_page_number") is not None
+    }
+    entries: list[tuple[str, str]] = []
+
+    cover_url = chapter_asset_url(
+        upload_dir, story_id, chapter_number, "cover"
+    )
+    if cover_url:
+        entries.append(("封面", cover_url))
+
+    for mapping_number in chapter.get("mapping_page_numbers") or []:
+        page = pages_by_mapping.get(mapping_number)
+        if page is None or page.get("page_number") is None:
+            continue
+        url = page_image_url(upload_dir, story_id, page["page_number"])
+        if url:
+            entries.append(
+                (f"第{page.get('chapter_page_number')}页", url)
+            )
+
+    guide_url = chapter_asset_url(
+        upload_dir, story_id, chapter_number, "guide"
+    )
+    if guide_url:
+        entries.append(("引导卡", guide_url))
+
+    images: list[ChapterImage] = []
+    for label, url in entries:
+        path = _upload_url_to_path(upload_dir, url)
+        if path is not None:
+            images.append(ChapterImage(label=label, url=url, path=path))
+    return images
+
+
 def build_chapter_images_zip(
     upload_dir: Path,
+    story_id: int,
     story_name: str,
     chapters: list[dict],
     pages: list[dict],
@@ -882,11 +945,6 @@ def build_chapter_images_zip(
 
     返回 (zip 字节, 下载文件名)；没有任何图片时返回 None。
     """
-    pages_by_mapping = {
-        page.get("mapping_page_number"): page
-        for page in pages
-        if page.get("mapping_page_number") is not None
-    }
     selected = [
         chapter
         for chapter in sorted(
@@ -905,33 +963,15 @@ def build_chapter_images_zip(
                 chapter.get("title", ""), f"第{number}章"
             )
             folder = f"第{number}章_{title}"
-            entries: list[tuple[str, str]] = []
 
-            cover_url = (chapter.get("cover") or {}).get("image_url")
-            if cover_url:
-                entries.append(("封面", cover_url))
-
-            for mapping_number in chapter.get("mapping_page_numbers") or []:
-                page = pages_by_mapping.get(mapping_number)
-                if page and page.get("image_url"):
-                    entries.append(
-                        (
-                            f"第{page.get('chapter_page_number')}页",
-                            page["image_url"],
-                        )
-                    )
-
-            guide_url = (chapter.get("guide") or {}).get("image_url")
-            if guide_url:
-                entries.append(("引导卡", guide_url))
-
-            for index, (label, url) in enumerate(entries, start=1):
-                path = _upload_url_to_path(upload_dir, url)
-                if path is None:
-                    continue
+            for index, image in enumerate(
+                collect_chapter_images(upload_dir, story_id, chapter, pages),
+                start=1,
+            ):
                 archive.write(
-                    path,
-                    f"{folder}/{index:02d}_{label}{path.suffix.lower()}",
+                    image.path,
+                    f"{folder}/{index:02d}_{image.label}"
+                    f"{image.path.suffix.lower()}",
                 )
                 written += 1
 

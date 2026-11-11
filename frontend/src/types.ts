@@ -366,6 +366,12 @@ export interface Story {
   zhihu_aliases: string[]
   /** 敏感词替换审计；没有执行过时为空 */
   sensitive_edit?: SensitiveEdit | null
+  /** 小红书发布设置（故事级）：合集名、内容声明与来源媒体名 */
+  xhs_collection: string
+  /** 平台固定文案之一；空串表示不声明 */
+  xhs_declaration: string
+  /** 仅「来源转载」声明下生效 */
+  xhs_repost_source: string
   created_at: string
   updated_at: string
 }
@@ -630,6 +636,7 @@ export interface StoryPostConfig {
 export interface StoryPostConfigPayload {
   title: string
   content: string
+  tags?: string[]
 }
 
 /** 一章一份的小红书文案配置。 */
@@ -639,8 +646,175 @@ export interface StoryChapterPostConfig {
   chapter_number: number
   title: string
   content: string
+  /** 本章选中的发布标签；预设标签只是候选项 */
+  tags: string[]
   created_at: string
   updated_at: string
+}
+
+// ---------------------------------------------------------------------------
+// 多平台发布（抖音 / 小红书）
+// ---------------------------------------------------------------------------
+
+// 多平台发布（抖音 / 小红书）
+export type PublishPlatform = 'douyin' | 'xiaohongshu'
+export type PublishMode = 'scheduled' | 'immediate'
+export type PublishJobStatus =
+  | 'queued'
+  | 'running'
+  | 'scheduled'
+  | 'failed'
+  | 'unknown'
+  | 'published'
+export type PublishAccountStatus = 'unknown' | 'valid' | 'invalid'
+
+export interface PublishTagPresets {
+  tags: string[]
+}
+
+/** 小红书内容声明可选项；由后端给出，前端只渲染 */
+export interface XhsDeclarationOptions {
+  options: { value: string; label: string }[]
+  default: string
+  /** 需要额外填写来源媒体名的选项值 */
+  repost_value: string
+}
+
+export interface PublishAccount {
+  id: number
+  platform: PublishPlatform
+  account_name: string
+  display_name: string
+  status: PublishAccountStatus
+  last_checked_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PublishImage {
+  label: string
+  url: string
+  filename: string
+}
+
+export interface PublishPreviewPayload {
+  story_id: number
+  chapter_number: number
+  platform: PublishPlatform
+  account_id: number
+  publish_mode: PublishMode
+  schedule_at: string | null
+}
+
+export type PreflightStatus = 'pass' | 'warning' | 'error'
+
+export type PreflightGroup =
+  | 'content'
+  | 'alias'
+  | 'images'
+  | 'account'
+  | 'platform'
+
+export type PreflightAction =
+  | 'stamp_alias'
+  | 'check_login'
+  | 'open_zhihu'
+  | 'open_chapters'
+  | 'open_post_config'
+
+export interface PreflightCheckItem {
+  label: string
+  status: PreflightStatus
+}
+
+export interface PreflightCheck {
+  key: string
+  group: PreflightGroup
+  label: string
+  status: PreflightStatus
+  message: string
+  action: PreflightAction | null
+  action_label: string | null
+  items: PreflightCheckItem[]
+}
+
+export interface PublishPreview {
+  platform: PublishPlatform
+  publish_mode: PublishMode
+  account: PublishAccount
+  title: string
+  note: string
+  tags: string[]
+  images: PublishImage[]
+  image_count: number
+  title_length: number
+  note_length: number
+  schedule_at: string | null
+  schedule_min_at: string
+  schedule_max_at: string
+  payload_hash: string | null
+  source_hash: string | null
+  /** 小红书发布设置：声明文案、来源媒体名与合集名；抖音为空 */
+  declaration: string | null
+  repost_source: string | null
+  collection: string | null
+  checks: PreflightCheck[]
+  errors: string[]
+  warnings: string[]
+}
+
+export interface PublishJobCreatePayload extends PublishPreviewPayload {
+  preview_hash: string
+  confirm: boolean
+}
+
+export interface PublishPayload {
+  platform: string
+  mode: PublishMode
+  account_name: string
+  title: string
+  note: string
+  tags: string[]
+  images: string[]
+  schedule_at: string | null
+  /** 小红书发布设置；历史任务没有这几项 */
+  declaration: string | null
+  repost_source: string | null
+  collection: string | null
+}
+
+export interface PublishJob {
+  id: string
+  story_id: number
+  chapter_number: number
+  platform: PublishPlatform
+  account_id: number
+  status: PublishJobStatus
+  scheduled_at: string
+  payload: PublishPayload
+  payload_hash: string
+  source_hash: string
+  snapshot_dir: string
+  external_url: string
+  exit_code: number | null
+  stdout_excerpt: string
+  error_message: string
+  started_at: string | null
+  finished_at: string | null
+  log_available: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface PublishJobLog {
+  job_id: string
+  text: string
+  truncated: boolean
+}
+
+export interface PublishJobPatchPayload {
+  status?: 'scheduled' | 'failed' | 'published'
+  external_url?: string
 }
 
 /** 更新故事级知乎推广信息；原名标题直接使用故事名，不单独提交。 */
@@ -958,4 +1132,10 @@ export interface DesignRuleCoverageRun {
   created_at: string
   started_at: string | null
   finished_at: string | null
+}
+
+export interface TerminalLaunchResult {
+  terminal: string
+  directory: string
+  message: string
 }

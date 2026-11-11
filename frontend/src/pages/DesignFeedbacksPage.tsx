@@ -33,6 +33,7 @@ import dayjs from 'dayjs'
 import DesignRulePanel from '../components/DesignRulePanel'
 import PageHeader from '../components/PageHeader'
 import ImageUpload from '../components/ImageUpload'
+import PlatformLabel from '../components/PlatformIcon'
 import { api, getErrorMessage } from '../api/client'
 import type {
   DesignFeedback,
@@ -54,6 +55,22 @@ const SOURCE_LABELS: Record<DesignFeedbackSource, string> = {
   xiaohongshu: '小红书',
   manual: '手动',
 }
+
+/** 来源标识：小红书复用平台图标，手动来源保持纯文本。 */
+function SourceLabel({ source }: { source: DesignFeedbackSource }) {
+  return source === 'xiaohongshu' ? (
+    <PlatformLabel platform="xiaohongshu" size={14} />
+  ) : (
+    <>{SOURCE_LABELS[source]}</>
+  )
+}
+
+const SOURCE_OPTIONS = (
+  Object.keys(SOURCE_LABELS) as DesignFeedbackSource[]
+).map((value) => ({
+  value,
+  label: <SourceLabel source={value} />,
+}))
 
 const CATEGORY_LABELS: Record<DesignFeedbackCategory, string> = {
   cover: '封面',
@@ -686,7 +703,7 @@ export default function DesignFeedbacksPage() {
                         label="来源"
                         style={{ width: 140 }}
                       >
-                        <Select options={optionsFrom(SOURCE_LABELS)} />
+                        <Select options={SOURCE_OPTIONS} />
                       </Form.Item>
                       <Form.Item
                         name="category"
@@ -817,7 +834,9 @@ export default function DesignFeedbacksPage() {
                 优先级 {PRIORITY_LABELS[detail.priority]}
               </Tag>
               <Tag>{scopeText(detail)}</Tag>
-              <Tag>{SOURCE_LABELS[detail.source]}</Tag>
+              <Tag>
+                <SourceLabel source={detail.source} />
+              </Tag>
               {detail.is_rule && (
                 <Tag color="purple">
                   规则 · {RULE_TARGET_LABELS[detail.rule_target]}

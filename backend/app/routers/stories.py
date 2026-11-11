@@ -8,12 +8,17 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..config import MAX_ZHIHU_ALIASES
+from ..config import (
+    MAX_ZHIHU_ALIASES,
+    XHS_DECLARATION_CHOICES,
+    XHS_DECLARATION_REPOST,
+)
 from ..crud import get_art_styles, resolve_deepseek_key
 from ..database import get_db
 from ..errors import AppError
 from ..models import (
     Post,
+    PublishJob,
     Story,
     StoryChapterPostConfig,
     StoryPostConfig,
@@ -23,6 +28,7 @@ from ..schemas import (
     StoryCreate,
     StoryRead,
     StoryUpdate,
+    StoryXiaohongshuUpdate,
     StoryZhihuUpdate,
     ZhihuAliasSuggestionsRead,
 )
@@ -111,6 +117,9 @@ def _to_story_read(
         zhihu_alias=story.zhihu_alias,
         zhihu_aliases=aliases,
         sensitive_edit=story.sensitive_edit,
+        xhs_collection=story.xhs_collection or "",
+        xhs_declaration=story.xhs_declaration or "",
+        xhs_repost_source=story.xhs_repost_source or "",
         created_at=story.created_at,
         updated_at=story.updated_at,
     )
@@ -269,6 +278,46 @@ def apply_story_sensitive_words(
     )
     story.content = content
     story.sensitive_edit = build_sensitive_edit(original, content, items, version)
+    db.commit()
+    db.refresh(story)
+    return _to_story_read(
+        story,
+        _load_art_styles(db),
+        request.app.state.app_settings.upload_dir,
+    )
+
+
+@router.patch("/{story_id}/xiaohongshu", response_model=StoryRead)
+def update_story_xiaohongshu(
+    story_id: int,
+    payload: StoryXiaohongshuUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StoryRead:
+    """保存故事级小红书发布设置：内容声明与来源媒体名。
+
+    这些设置只在本故事的所有章节发布时生效；抖音发布不读取它们。
+    声明必须是平台固定文案之一；「来源转载」必须同时给出媒体名。
+    合集暂停接入，这里不再接收也不再写入合集名。
+    """
+    story = _get_story_or_404(db, story_id)
+    declaration = payload.declaration.strip()
+    if declaration and declaration not in XHS_DECLARATION_CHOICES:
+        raise AppError(
+            422,
+            f"内容声明「{declaration}」不是平台可选项，"
+            f"可选：{'、'.join(XHS_DECLARATION_CHOICES)}（留空表示不声明）",
+            "XHS_DECLARATION_INVALID",
+        )
+    repost_source = payload.repost_source.strip()
+    if declaration == XHS_DECLARATION_REPOST and not repost_source:
+        raise AppError(
+            422,
+            "选择「来源转载」时必须填写来源媒体名，否则会发出空来源声明",
+            "XHS_REPOST_SOURCE_REQUIRED",
+        )
+    story.xhs_declaration = declaration
+    story.xhs_repost_source = repost_source
     db.commit()
     db.refresh(story)
     return _to_story_read(
@@ -443,6 +492,22 @@ def delete_story(
             409,
             f"该故事下已有 {post_count} 条发文记录，请先删除发文后再删除故事",
             "STORY_HAS_POSTS",
+        )
+
+    publish_job_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(PublishJob)
+            .where(PublishJob.story_id == story_id)
+        )
+        or 0
+    )
+    if publish_job_count:
+        raise AppError(
+            409,
+            f"该故事下已有 {publish_job_count} 条发布任务记录，"
+            "为保留发布历史，暂不能删除故事",
+            "STORY_HAS_PUBLISH_JOBS",
         )
 
     cover_filename = story.cover_filename

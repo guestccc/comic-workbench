@@ -1,18 +1,30 @@
 import { useEffect, useState } from 'react'
-import { Button, FloatButton, Layout, Menu, Typography } from 'antd'
+import {
+  App as AntdApp,
+  Button,
+  FloatButton,
+  Layout,
+  Menu,
+  Tooltip,
+  Typography,
+} from 'antd'
 import {
   BookOutlined,
   BulbOutlined,
+  CodeOutlined,
   EditOutlined,
   FileTextOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  SendOutlined,
   SettingOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { api, getErrorMessage } from './api/client'
 import DesignFeedbacksPage from './pages/DesignFeedbacksPage'
 import PromptPage from './pages/PromptPage'
+import PublishJobsPage from './pages/PublishJobsPage'
 import SettingsPage from './pages/SettingsPage'
 import StoriesPage from './pages/StoriesPage'
 import StoryDetailPage from './pages/StoryDetailPage'
@@ -33,6 +45,7 @@ function readSiderCollapsed(): boolean {
 const menuItems: MenuProps['items'] = [
   { key: '/prompt', icon: <EditOutlined />, label: '启动提示词' },
   { key: '/stories', icon: <BookOutlined />, label: '故事管理' },
+  { key: '/publish-jobs', icon: <SendOutlined />, label: '发布任务' },
   { key: '/design-feedbacks', icon: <BulbOutlined />, label: '设计建议' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
   { key: 'api-docs', icon: <FileTextOutlined />, label: '接口文档' },
@@ -41,6 +54,7 @@ const menuItems: MenuProps['items'] = [
 const pageTitles: Record<string, string> = {
   '/prompt': '启动提示词与画风配置',
   '/stories': '故事库',
+  '/publish-jobs': '发布任务',
   '/design-feedbacks': '设计建议',
   '/settings': '应用设置',
 }
@@ -70,7 +84,9 @@ function resolvePageTitle(pathname: string): string {
 export default function App() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { message } = AntdApp.useApp()
   const [collapsed, setCollapsed] = useState(readSiderCollapsed)
+  const [openingTerminal, setOpeningTerminal] = useState(false)
 
   useEffect(() => {
     try {
@@ -82,6 +98,19 @@ export default function App() {
       // localStorage 不可用时忽略，仅影响记忆，不影响收起功能
     }
   }, [collapsed])
+
+  /** 终端由本机后端创建，前端只触发固定接口，不接触 shell。 */
+  const handleOpenTerminal = async () => {
+    setOpeningTerminal(true)
+    try {
+      const result = await api.openTerminal()
+      message.success(result.message)
+    } catch (error) {
+      message.error(getErrorMessage(error))
+    } finally {
+      setOpeningTerminal(false)
+    }
+  }
 
   const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
     if (key === 'api-docs') {
@@ -137,6 +166,18 @@ export default function App() {
           <Typography.Text type="secondary">
             {resolvePageTitle(location.pathname)}
           </Typography.Text>
+          <div className="app-header-actions">
+            <Tooltip title="在项目根目录打开终端并启动 Claude Code">
+              <Button
+                type="text"
+                icon={<CodeOutlined />}
+                loading={openingTerminal}
+                onClick={handleOpenTerminal}
+              >
+                终端
+              </Button>
+            </Tooltip>
+          </div>
         </Header>
         <Content className="app-content">
           <Routes>
@@ -145,6 +186,7 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/stories" element={<StoriesPage />} />
             <Route path="/stories/:id" element={<StoryDetailPage />} />
+            <Route path="/publish-jobs" element={<PublishJobsPage />} />
             <Route
               path="/design-feedbacks"
               element={<DesignFeedbacksPage />}

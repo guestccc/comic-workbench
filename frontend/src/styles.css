@@ -66,6 +66,14 @@ body {
   margin-left: -8px;
 }
 
+/* 顶栏右侧操作区：终端入口靠右，不影响页面标题 */
+.app-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 /* 所有页面内容铺满可用宽度，不限制最大宽度 */
 .app-content {
   width: 100%;
@@ -480,6 +488,28 @@ body {
   border: 1px solid #e6f4ff;
   border-radius: 8px;
   background: #f7fbff;
+}
+
+/* 发文配置与图文发布左右并列：左侧改文案，右侧预览 / 建任务；左右各占一半 */
+.post-config-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.post-config-layout-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.post-config-publish .publish-panel {
+  margin-top: 0;
+}
+
+@media (max-width: 1200px) {
+  .post-config-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* 章节发布：一章 = 封面 + 正文 + 引导卡 */
@@ -1601,4 +1631,223 @@ body {
 
 .prompt-snapshot-prompt.is-expanded {
   max-height: 60vh;
+}
+
+/* 发布平台图标：标题、Tag、下拉与详情共用，尺寸由组件参数决定 */
+.platform-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+}
+
+.platform-icon {
+  flex: none;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+/* 多平台发布：章节发布面板与预设标签 */
+.publish-panel {
+  margin-top: 24px;
+  padding: 16px;
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.publish-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+/* 发布记录在右侧窄栏里用卡片列表，避免表格横向滚动 */
+.publish-job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.publish-job-item {
+  padding: 10px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.publish-job-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.publish-job-item-title {
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.publish-schedule {
+  margin-bottom: 12px;
+}
+
+/* 故事级小红书发布设置：合集 + AI 声明，与章节无关 */
+.publish-xhs-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px dashed #f0f0f0;
+  border-radius: 8px;
+  background: #fcfcfc;
+}
+
+.publish-preview {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.publish-issue-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.publish-note-preview {
+  max-height: 240px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fff;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.publish-image-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.publish-image-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #666;
+  font-size: 12px;
+}
+
+/* 结果是多行报错（含 traceback），必须换行而不是撑破表格 */
+.publish-job-result {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 发布前检查弹窗：后端 checks 的分组展示与确认 */
+.preflight-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.preflight-stats {
+  margin-bottom: 12px;
+}
+
+.preflight-group .ant-divider {
+  margin: 16px 0 8px;
+}
+
+.preflight-check {
+  display: flex;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.preflight-check + .preflight-check {
+  margin-top: 6px;
+}
+
+.preflight-check-error {
+  background: #fff2f0;
+}
+
+.preflight-check-warning {
+  background: #fffbe6;
+}
+
+.preflight-check-icon {
+  line-height: 22px;
+  font-size: 16px;
+}
+
+.preflight-check-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.preflight-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.preflight-check-message {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.preflight-check-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.preflight-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.preflight-confirm {
+  flex: 1;
+  min-width: 220px;
+  text-align: left;
+}
+
+.publish-log {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #1f1f1f;
+  color: #d9d9d9;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

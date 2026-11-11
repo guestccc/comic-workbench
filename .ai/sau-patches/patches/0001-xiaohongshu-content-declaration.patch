@@ -1,0 +1,316 @@
+diff --git a/README.md b/README.md
+index 32487e2..656c403 100644
+--- a/README.md
++++ b/README.md
+@@ -221,6 +221,7 @@ sau zhihu upload-article --account creator --title "文章标题" --content-file
+ sau douyin upload-note --account <account_name> --images videos/1.png videos/2.png --title "图文标题" --note "图文正文"
+ sau kuaishou upload-note --account <account_name> --images videos/1.png videos/2.png videos/3.png --title "图文标题" --note "图文正文"
+ sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png videos/3.png --title "图文标题" --note "图文正文"
++sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png --title "图文标题" --note "图文正文" --declaration "笔记含AI合成内容"
+ sau facebook-page upload-note --account <account_name> --images images/1.jpg --title "Page 图文" --note "正文" --page "我的 Page" --schedule "2026-10-21 10:30" --result .local/page-result.json
+ sau facebook upload-note --account creator --images images/1.jpg images/2.jpg --title "图片帖" --note "正文"
+ sau instagram upload-note --account creator --images images/1.jpg images/2.jpg --title "图片轮播" --note "正文"
+diff --git a/docs/CLI.md b/docs/CLI.md
+index a25b0d5..e4d19bb 100644
+--- a/docs/CLI.md
++++ b/docs/CLI.md
+@@ -138,8 +138,14 @@ sau xiaohongshu login --account <account_name>
+ sau xiaohongshu check --account <account_name>
+ sau xiaohongshu upload-video --account <account_name> --file videos/demo.mp4 --title "示例标题" --desc "示例简介" --tags 小红书,视频
+ sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png videos/3.png --title "图文标题" --note "图文示例" --tags 图文,测试
++sau xiaohongshu upload-note --account <account_name> --images videos/1.png videos/2.png --title "图文标题" --note "图文示例" --declaration "笔记含AI合成内容"
+ ```
+ 
++`upload-note` 的声明选项：
++
++- `--declaration`：内容类型声明的**精确选项文案**，例如 `笔记含AI合成内容`、`虚构演绎，仅供娱乐`、`内容包含营销广告`。不传则完全不修改发布页声明；传了但设置失败会拒绝发布，避免静默漏声明。
++- `--repost-source`：声明为「内容来源声明」并填写媒体名称；不能与 `--declaration` 同时使用。
++
+ 海外环境如果无法登录默认创作者后台，可以通过环境变量切换到 RedNote 域名。该设置同时作用于登录、cookie 校验、视频发布和图文发布：
+ 
+ ```bash
+diff --git a/sau_commands/xiaohongshu.py b/sau_commands/xiaohongshu.py
+index ad8b457..0cf004d 100644
+--- a/sau_commands/xiaohongshu.py
++++ b/sau_commands/xiaohongshu.py
+@@ -52,6 +52,16 @@ def register(platform_parsers):
+     xiaohongshu_upload_note_parser.add_argument("--note", default="", help="Optional note content")
+     xiaohongshu_upload_note_parser.add_argument("--tags", default="", help="Comma-separated tags, such as tag1,tag2")
+     xiaohongshu_upload_note_parser.add_argument("--schedule", type=schedule_value, help=f"Schedule time in {schedule_help}")
++    xiaohongshu_upload_note_parser.add_argument(
++        "--declaration",
++        default=None,
++        help="Exact content declaration option text, such as 笔记含AI合成内容; omitted means do not set one",
++    )
++    xiaohongshu_upload_note_parser.add_argument(
++        "--repost-source",
++        default=None,
++        help="Media name for the repost declaration; selects 内容来源声明 and cannot be combined with --declaration",
++    )
+     add_runtime_flags(xiaohongshu_upload_note_parser)
+ 
+ 
+@@ -80,6 +90,8 @@ class XiaohongshuNoteUploadRequest:
+     publish_strategy: str = XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE
+     debug: bool = True
+     headless: bool = True
++    declaration: str | None = None
++    repost_source: str | None = None
+ 
+ 
+ async def login_xiaohongshu_account(account_name: str, headless: bool = True) -> dict:
+@@ -137,6 +149,8 @@ async def upload_xiaohongshu_note(request: XiaohongshuNoteUploadRequest) -> Path
+         publish_strategy=request.publish_strategy,
+         debug=request.debug,
+         headless=request.headless,
++        declaration=request.declaration,
++        repost_source=request.repost_source,
+     )
+     await app.main()
+     return account_file
+@@ -196,6 +210,8 @@ async def run(args):
+             publish_strategy=publish_strategy,
+             debug=args.debug,
+             headless=args.headless,
++            declaration=getattr(args, "declaration", None),
++            repost_source=getattr(args, "repost_source", None),
+         )
+         await upload_xiaohongshu_note(request)
+         print(f"Xiaohongshu note upload submitted: {len(request.image_files)} images")
+diff --git a/tests/test_sau_browser_cli.py b/tests/test_sau_browser_cli.py
+index c08805a..721383e 100644
+--- a/tests/test_sau_browser_cli.py
++++ b/tests/test_sau_browser_cli.py
+@@ -328,6 +328,50 @@ class BrowserCliDispatchTests(unittest.TestCase):
+         self.assertEqual(request.description, "视频简介")
+         self.assertFalse(request.headless)
+ 
++    def test_xiaohongshu_upload_note_accepts_declaration(self):
++        with tempfile.TemporaryDirectory() as tmp_dir:
++            image_path = Path(tmp_dir) / "1.png"
++            image_path.write_bytes(b"image")
++            args = sau_cli.build_parser().parse_args([
++                "xiaohongshu", "upload-note", "--account", "creator",
++                "--images", str(image_path), "--title", "标题",
++                "--declaration", "笔记含AI合成内容",
++            ])
++        self.assertEqual(args.declaration, "笔记含AI合成内容")
++        self.assertIsNone(args.repost_source)
++
++    def test_xiaohongshu_upload_note_has_no_implicit_declaration(self):
++        with tempfile.TemporaryDirectory() as tmp_dir:
++            image_path = Path(tmp_dir) / "1.png"
++            image_path.write_bytes(b"image")
++            args = sau_cli.build_parser().parse_args([
++                "xiaohongshu", "upload-note", "--account", "creator",
++                "--images", str(image_path), "--title", "标题",
++            ])
++        self.assertIsNone(args.declaration)
++        self.assertIsNone(args.repost_source)
++
++    def test_dispatch_xiaohongshu_upload_note_forwards_declaration(self):
++        args = Namespace(
++            platform="xiaohongshu",
++            action="upload-note",
++            account="creator",
++            images=[Path("1.png")],
++            title="图文标题",
++            note="图文正文",
++            tags="",
++            schedule=0,
++            debug=False,
++            headless=True,
++            declaration="笔记含AI合成内容",
++            repost_source=None,
++        )
++        with patch("sau_commands.xiaohongshu.upload_xiaohongshu_note", new=AsyncMock()) as mock_upload:
++            asyncio.run(sau_cli.dispatch(args))
++
++        request = mock_upload.await_args.args[0]
++        self.assertEqual(request.declaration, "笔记含AI合成内容")
++
+     def test_dispatch_xiaohongshu_upload_note_uses_headless_request(self):
+         args = Namespace(
+             platform="xiaohongshu",
+diff --git a/tests/test_xiaohongshu_uploader.py b/tests/test_xiaohongshu_uploader.py
+index d2b2fcd..7e4f035 100644
+--- a/tests/test_xiaohongshu_uploader.py
++++ b/tests/test_xiaohongshu_uploader.py
+@@ -279,6 +279,70 @@ class XiaohongshuUploaderTests(unittest.TestCase):
+         self.assertEqual(app.title, "显式标题")
+         self.assertEqual(app.desc, "图文正文")
+ 
++    def test_note_declaration_defaults_to_none(self):
++        app = xhs_main.XiaoHongShuNote(
++            image_paths=["a.png"],
++            note="正文",
++            tags=[],
++            publish_date=0,
++            account_file="account.json",
++        )
++
++        self.assertIsNone(app.declaration)
++        self.assertIsNone(app.repost_source)
++
++    def test_note_declaration_is_trimmed(self):
++        app = xhs_main.XiaoHongShuNote(
++            image_paths=["a.png"],
++            note="正文",
++            tags=[],
++            publish_date=0,
++            account_file="account.json",
++            declaration=" 笔记含AI合成内容 ",
++        )
++
++        self.assertEqual(app.declaration, "笔记含AI合成内容")
++
++    def test_note_rejects_declaration_and_repost_source_together(self):
++        app = xhs_main.XiaoHongShuNote(
++            image_paths=["a.png"],
++            note="正文",
++            tags=[],
++            publish_date=0,
++            account_file="account.json",
++            declaration="笔记含AI合成内容",
++            repost_source="某媒体",
++        )
++
++        with patch.object(app, "validate_base_args", new=AsyncMock(return_value=None)):
++            with self.assertRaises(ValueError):
++                asyncio.run(app.validate_upload_args())
++
++    def test_note_skips_declaration_when_not_requested(self):
++        app = xhs_main.XiaoHongShuNote(
++            image_paths=["a.png"],
++            note="正文",
++            tags=[],
++            publish_date=0,
++            account_file="account.json",
++        )
++
++        # 未传声明时不应触碰页面
++        asyncio.run(app.apply_content_declaration(RecordingPage()))
++
++    def test_note_declaration_rejects_repost_option(self):
++        app = xhs_main.XiaoHongShuNote(
++            image_paths=["a.png"],
++            note="正文",
++            tags=[],
++            publish_date=0,
++            account_file="account.json",
++            declaration="内容来源声明",
++        )
++
++        with self.assertRaises(RuntimeError):
++            asyncio.run(app.apply_content_declaration(RecordingPage()))
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/uploader/xiaohongshu_uploader/main.py b/uploader/xiaohongshu_uploader/main.py
+index 7ca7163..4db1542 100644
+--- a/uploader/xiaohongshu_uploader/main.py
++++ b/uploader/xiaohongshu_uploader/main.py
+@@ -521,6 +521,63 @@ class XiaoHongShuBaseUploader(BaseVideoUploader):
+                 pass
+ 
+ 
++    async def apply_content_declaration(self, page: Page) -> None:
++        """在「添加内容类型声明」下拉里选择指定声明。
++
++        小红书把「虚构演绎，仅供娱乐」「笔记含AI合成内容」「内容包含营销广告」
++        「内容来源声明」放在同一个 dropdown 里（``.declaration-drop-down``），
++        选项点击后立即生效并收起下拉，入口文案变成已选声明。
++        显式传入声明却设置失败时拒绝继续发布，避免静默漏掉合规声明；
++        「内容来源声明」需要媒体来源，请改用 ``--repost-source``。
++        """
++        declaration = getattr(self, "declaration", None)
++        if not declaration:
++            return
++        if declaration in {"内容来源声明", "来源转载"}:
++            raise RuntimeError(f"声明「{declaration}」需要提供来源，请改用 --repost-source")
++        try:
++            entry = page.get_by_text("添加内容类型声明", exact=False).first
++            if not await entry.count():
++                # 已选过声明时入口直接显示声明文本
++                if await page.get_by_text(declaration, exact=True).count():
++                    xiaohongshu_logger.info(_msg("🧾", f"内容声明已是「{declaration}」"))
++                    return
++                raise RuntimeError("未找到「添加内容类型声明」入口")
++
++            try:
++                await entry.scroll_into_view_if_needed(timeout=5000)
++            except Exception:
++                pass
++            try:
++                await entry.click(timeout=8000)
++            except Exception:
++                await _js_click_by_text(page, "添加内容类型声明")
++            await page.wait_for_timeout(1200)
++
++            popover = page.locator(".d-popover.declaration-drop-down").first
++            await popover.wait_for(state="visible", timeout=8000)
++            option = popover.locator(".d-grid-item").filter(has_text=declaration).first
++            if not await option.count():
++                raise RuntimeError(f"声明选项「{declaration}」不存在")
++            try:
++                await option.click(timeout=6000)
++            except Exception:
++                await option.click(force=True, timeout=6000)
++            await page.wait_for_timeout(800)
++
++            # 点击后下拉收起，入口文案变成声明名称；以此为生效依据
++            if not await page.get_by_text(declaration, exact=True).count():
++                raise RuntimeError(f"声明「{declaration}」未生效")
++            xiaohongshu_logger.success(_msg("🧾", f"内容声明已选择「{declaration}」"))
++        except Exception as exc:
++            try:
++                await page.keyboard.press("Escape")
++            except Exception:
++                pass
++            xiaohongshu_logger.error(_msg("🧾", f"内容声明「{declaration}」设置失败: {exc}"))
++            raise RuntimeError(f"内容声明「{declaration}」设置失败，拒绝继续发布: {exc}") from exc
++
++
+ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
+     def __init__(
+         self,
+@@ -739,6 +796,8 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
+         publish_strategy: str = XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE,
+         debug: bool = DEBUG_MODE,
+         headless: bool = LOCAL_CHROME_HEADLESS,
++        declaration: str | None = None,
++        repost_source: str | None = None,
+     ):
+         super().__init__(
+             publish_date=publish_date,
+@@ -752,6 +811,8 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
+         self.tags = tags or []
+         self.desc = desc if desc is not None else self.note
+         self.title = title or ((self.desc or self.note)[:20] if (self.desc or self.note) else "")
++        self.declaration = (declaration or "").strip() or None
++        self.repost_source = (repost_source or "").strip() or None
+ 
+     async def validate_upload_args(self):
+         await self.validate_base_args()
+@@ -759,6 +820,8 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
+             raise ValueError("图文模式下，图片是必须的")
+         if not self.title or not str(self.title).strip():
+             raise ValueError("图文模式下，title 是必须的")
++        if self.declaration and self.repost_source:
++            raise ValueError("--declaration 与 --repost-source 不能同时使用")
+ 
+         if isinstance(self.image_paths, (str, Path)):
+             self.image_paths = [self.image_paths]
+@@ -798,7 +861,10 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
+         xiaohongshu_logger.info(_msg("✍️", "小人开始填标题、描述和话题"))
+         await self.fill_meta(page)
+ 
+-        await self.check_original_declaration(page)
++        await self.apply_content_declaration(page)
++
++        if self.repost_source:
++            await self.check_original_declaration(page)
+ 
+         if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED and self.publish_date != 0:
+             await self.set_schedule_time_xiaohongshu(page, self.publish_date)

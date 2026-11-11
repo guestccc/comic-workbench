@@ -32,6 +32,7 @@ from .config import (
     MAX_STORY_NAME_LENGTH,
     MAX_ZHIHU_ALIAS_LENGTH,
     MAX_ZHIHU_ARTICLE_ID_LENGTH,
+    XHS_DEFAULT_DECLARATION,
 )
 
 
@@ -76,6 +77,18 @@ class Story(Base):
     )
     # 敏感词替换审计：原文、替换后文本、逐词次数、词库版本与时间
     sensitive_edit: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 小红书发布设置（故事级，所有章节共用）：合集名、内容声明与来源媒体名
+    xhs_collection: Mapped[str] = mapped_column(
+        String(64), default="", nullable=False
+    )
+    # 平台固定文案之一；空串表示不声明
+    xhs_declaration: Mapped[str] = mapped_column(
+        String(32), default=XHS_DEFAULT_DECLARATION, nullable=False
+    )
+    # 仅当声明为「来源转载」时生效
+    xhs_repost_source: Mapped[str] = mapped_column(
+        String(64), default="", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -662,6 +675,91 @@ class StoryChapterPostConfig(Base):
         String(MAX_POST_TITLE_LENGTH), default="", nullable=False
     )
     content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # 本章选中的发布标签；全局预设标签只是候选项，不是第二份章节标签。
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class PublishAccount(Base):
+    """外部 sau 的本地账号别名；Cookie 只存在于 sau 项目，不落本库。"""
+
+    __tablename__ = "publish_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "platform",
+            "account_name",
+            name="uq_publish_account_platform_name",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(20), nullable=False)
+    account_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(
+        String(64), default="", nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="unknown", nullable=False
+    )
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class PublishJob(Base):
+    """一次发布任务：载荷与图片快照创建后不可变，重发必须新建任务。"""
+
+    __tablename__ = "publish_jobs"
+    __table_args__ = (
+        Index("ix_publish_jobs_story_chapter", "story_id", "chapter_number"),
+        Index("ix_publish_jobs_status", "status"),
+        Index("ix_publish_jobs_platform", "platform"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    story_id: Mapped[int] = mapped_column(
+        ForeignKey("stories.id", ondelete="RESTRICT"), nullable=False
+    )
+    chapter_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    platform: Mapped[str] = mapped_column(String(20), nullable=False)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("publish_accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="queued", nullable=False
+    )
+    scheduled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_dir: Mapped[str] = mapped_column(
+        String(255), default="", nullable=False
+    )
+    external_url: Mapped[str] = mapped_column(
+        String(500), default="", nullable=False
+    )
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stdout_excerpt: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

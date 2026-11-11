@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
+from datetime import timedelta, timezone
 from pathlib import Path
 
 # 目录约定：backend/app/config.py -> backend -> comic-workbench
@@ -12,6 +14,63 @@ PROJECT_DIR = BACKEND_DIR.parent
 DEFAULT_DB_PATH = PROJECT_DIR / "data" / "workbench.db"
 DEFAULT_UPLOAD_DIR = BACKEND_DIR / "uploads"
 DEFAULT_FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
+
+# 多平台发布：外部 social-auto-upload（sau）独立进程。
+# 工作台只通过 CLI 调用，不 import 其模块；路径可用 AppSettings 覆盖。
+SAU_PROJECT_DIR = Path(r"E:\workbenchs\social-auto-upload")
+SAU_EXECUTABLE = SAU_PROJECT_DIR / ".venv" / "Scripts" / "sau.exe"
+
+# 顶栏「终端」按钮优先使用的 Windows Terminal（本机为免安装便携版，不在 PATH）。
+# 升级 / 移动目录后需同步修改；也可用环境变量 WINDOWS_TERMINAL_EXECUTABLE 覆盖，
+# 路径不存在时自动回退 PATH → Store 别名 → cmd。
+WINDOWS_TERMINAL_EXECUTABLE = Path(
+    r"D:\Microsoft.WindowsTerminalPreview_1.25.622.0_x64\terminal-1.25.622.0\wt.exe"
+)
+
+PUBLISH_PLATFORM_DOUYIN = "douyin"
+PUBLISH_PLATFORM_XIAOHONGSHU = "xiaohongshu"
+PUBLISH_PLATFORM_LABELS = {
+    PUBLISH_PLATFORM_DOUYIN: "抖音",
+    PUBLISH_PLATFORM_XIAOHONGSHU: "小红书",
+}
+PUBLISH_PLATFORMS = tuple(PUBLISH_PLATFORM_LABELS)
+PUBLISH_TIMEZONE = timezone(timedelta(hours=8))
+PUBLISH_SCHEDULE_MIN_LEAD = timedelta(hours=2)
+# 抖音创作中心提示「2 小时后及 14 天内」，小红书常见版本同为 14 天；
+# 平台改版或账号权限不同时，由平台 / sau 报错兜底。
+PUBLISH_SCHEDULE_MAX_LEAD = timedelta(days=14)
+PUBLISH_TASK_TIMEOUT_SECONDS = 600
+PUBLISH_SUCCESS_MARKER = "图文发布成功"
+PUBLISH_TAG_PRESETS_KEY = "publish_tag_presets"
+# 默认预设标签：仅在设置缺失或损坏时由读取接口回填，不写入数据库。
+DEFAULT_PUBLISH_TAG_PRESETS = ("画一个故事", "小说推文", "漫画故事")
+MAX_PUBLISH_TAGS = 10
+MAX_PUBLISH_TAG_LENGTH = 30
+# 两个平台正文上限一致；图片上限按平台区分。
+MAX_PUBLISH_NOTE_LENGTH = 1000
+MAX_PUBLISH_IMAGES_BY_PLATFORM = {
+    PUBLISH_PLATFORM_DOUYIN: 35,
+    PUBLISH_PLATFORM_XIAOHONGSHU: 18,
+}
+SUPPORTED_PUBLISH_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+# 小红书发布页的内容类型声明文案由平台固定，sau 按精确文案点击选项；
+# 平台改文案后旧值会被写入口拒绝，这里同步更新枚举即可。
+# 空串表示「不声明」，是合法取值但不属于平台选项，因此单独保留常量。
+XHS_DECLARATION_NONE = ""
+XHS_DECLARATION_REPOST = "来源转载"
+XHS_DECLARATION_CHOICES = (
+    "虚构演绎，仅供娱乐",
+    "笔记含AI合成内容",
+    "内容包含营销广告",
+    XHS_DECLARATION_REPOST,
+)
+XHS_DEFAULT_DECLARATION = "笔记含AI合成内容"
+MAX_XHS_DECLARATION_LENGTH = 32
+# 「来源转载」必须同时给出媒体名，否则 sau 会发出空来源声明
+MAX_XHS_REPOST_SOURCE_LENGTH = 64
+# 本地存储上限；平台侧合集名的实际长度限制未公开，超长由 sau 匹配失败兜底。
+# 合集当前暂停接入，常量保留给 PR2 接回时使用。
+MAX_XHS_COLLECTION_LENGTH = 64
 
 # DeepSeek（OpenAI 兼容接口）
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -419,3 +478,19 @@ class AppSettings:
     db_path: Path = DEFAULT_DB_PATH
     upload_dir: Path = DEFAULT_UPLOAD_DIR
     frontend_dist: Path = DEFAULT_FRONTEND_DIST
+    sau_project_dir: Path = SAU_PROJECT_DIR
+    sau_executable: Path = SAU_EXECUTABLE
+    publish_log_dir: Path | None = None
+    publish_timeout_seconds: int = PUBLISH_TASK_TIMEOUT_SECONDS
+
+    @property
+    def resolved_publish_log_dir(self) -> Path:
+        """日志默认放在数据库同级的 data 目录，测试可用临时库自动隔离。"""
+        return self.publish_log_dir or (self.db_path.parent / "publish-logs")
+
+    @property
+    def sau_python(self) -> Path:
+        """`sau` 虚拟环境的解释器；抓取脚本依赖其中的 patchright。"""
+        return self.sau_executable.with_name(
+            "python.exe" if os.name == "nt" else "python"
+        )

@@ -76,6 +76,34 @@ def apply_schema_migrations(engine: Engine) -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE stories ADD COLUMN sensitive_edit JSON"
             )
+        # 小红书发布设置（故事级）：合集名、内容声明与来源媒体名
+        if columns and "xhs_collection" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN xhs_collection VARCHAR(64) "
+                "NOT NULL DEFAULT ''"
+            )
+        # 声明由布尔开关升级为平台选项文案；旧库按原开关语义回填
+        if columns and "xhs_declaration" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN xhs_declaration VARCHAR(32) "
+                "NOT NULL DEFAULT '笔记含AI合成内容'"
+            )
+            if "xhs_ai_declaration" in columns:
+                # 用户关掉过声明的故事迁移为「不声明」，其余保持默认文案
+                connection.exec_driver_sql(
+                    "UPDATE stories SET xhs_declaration = '' "
+                    "WHERE xhs_ai_declaration = 0"
+                )
+        if columns and "xhs_repost_source" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories ADD COLUMN xhs_repost_source VARCHAR(64) "
+                "NOT NULL DEFAULT ''"
+            )
+        # 旧开关已由 xhs_declaration 取代，避免留下第二个可编辑源
+        if columns and "xhs_ai_declaration" in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE stories DROP COLUMN xhs_ai_declaration"
+            )
 
         # AI 改动解读的持久化缓存（原文 / 优化文未变时不再调用模型）
         breakdown_columns = {
@@ -142,6 +170,19 @@ def apply_schema_migrations(engine: Engine) -> None:
         if rule_columns and "template_applied_at" not in rule_columns:
             connection.exec_driver_sql(
                 "ALTER TABLE design_rules ADD COLUMN template_applied_at DATETIME"
+            )
+
+        # 章节发文配置增加发布标签（全局预设标签只是候选项）
+        chapter_post_columns = {
+            row[1]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(story_chapter_post_configs)"
+            )
+        }
+        if chapter_post_columns and "tags" not in chapter_post_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE story_chapter_post_configs "
+                "ADD COLUMN tags JSON NOT NULL DEFAULT '[]'"
             )
 
         # 提示词快照增加规则硬检查结果

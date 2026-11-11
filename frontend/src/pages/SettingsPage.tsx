@@ -4,12 +4,19 @@ import PageHeader from '../components/PageHeader'
 import DeepSeekKeyPanel from '../components/DeepSeekKeyPanel'
 import ImageProviderPanel from '../components/ImageProviderPanel'
 import PromptTemplatePanel from '../components/PromptTemplatePanel'
+import PublishSettingsPanel from '../components/PublishSettingsPanel'
 import SensitiveWordsPanel from '../components/SensitiveWordsPanel'
 import { api, getErrorMessage } from '../api/client'
 import type { SettingsData } from '../types'
 
 const SETTINGS_TAB_KEY = 'comic-workbench-settings-tab'
-const SETTINGS_TABS = ['deepseek', 'image', 'templates', 'sensitive'] as const
+const SETTINGS_TABS = [
+  'deepseek',
+  'image',
+  'templates',
+  'sensitive',
+  'publish',
+] as const
 type SettingsTabKey = (typeof SETTINGS_TABS)[number]
 
 function readStoredTab(): SettingsTabKey {
@@ -71,7 +78,7 @@ export default function SettingsPage() {
     <div>
       <PageHeader
         title="设置"
-        description="按标签配置 DeepSeek、生图服务、提示词模板与敏感词库。"
+        description="按标签配置 DeepSeek、生图服务、提示词模板、敏感词库与发布预设标签。"
       />
 
       <Tabs
@@ -109,6 +116,11 @@ export default function SettingsPage() {
             key: 'sensitive',
             label: '敏感词库',
             children: <SensitiveWordsPanel />,
+          },
+          {
+            key: 'publish',
+            label: '发布',
+            children: <PublishSettingsPanel />,
           },
         ]}
       />
